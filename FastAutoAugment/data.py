@@ -33,6 +33,78 @@ _IMAGENET_PCA = {
 }
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 
+def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False, target_lb=-1):
+    """
+    generate dataloaders for controller training
+    only changes validloader from original one: shuffle at sample & no aug
+    """
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+    ])
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+    ])
+
+    if C.get()['cutout'] > 0:
+        transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
+    if dataset == 'cifar10':
+        trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
+        validset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_test)
+        testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
+    elif dataset == 'reduced_cifar10':
+        trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
+        validset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_test)
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=46000, random_state=0)   # 4000 trainset
+        sss = sss.split(list(range(len(trainset))), trainset.targets)
+        train_idx, valid_idx = next(sss)
+        targets = [trainset.targets[idx] for idx in train_idx]
+        trainset = Subset(trainset, train_idx)
+        trainset.targets = targets
+        testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
+    elif dataset == 'cifar100':
+        trainset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=True, transform=transform_train)
+        validset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=True, transform=transform_test)
+        testset = torchvision.datasets.CIFAR100(root=dataroot, train=False, download=True, transform=transform_test)
+    else:
+        raise ValueError('invalid dataset name=%s' % dataset)
+    # split train & valid
+    train_sampler = None
+    if split > 0.0:
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=split, random_state=0)
+        sss = sss.split(list(range(len(trainset))), trainset.targets)
+        train_idx, valid_idx = next(sss)
+
+        if target_lb >= 0:
+            train_idx = [i for i in train_idx if trainset.targets[i] == target_lb]
+            valid_idx = [i for i in valid_idx if validset.targets[i] == target_lb]
+
+        train_sampler = SubsetRandomSampler(train_idx)
+        valid_sampler = SubsetRandomSampler(valid_idx)
+
+        if multinode:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(Subset(trainset, train_idx), num_replicas=dist.get_world_size(), rank=dist.get_rank())
+    else:
+        valid_sampler = SubsetRandomSampler([])
+
+        if multinode:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(trainset, num_replicas=dist.get_world_size(), rank=dist.get_rank())
+            logger.info(f'----- dataset with DistributedSampler  {dist.get_rank()}/{dist.get_world_size()}')
+
+    trainloader = torch.utils.data.DataLoader(
+        trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8, pin_memory=True,
+        sampler=train_sampler, drop_last=True)
+    validloader = torch.utils.data.DataLoader(
+        validset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
+        sampler=valid_sampler, drop_last=False)
+    testloader = torch.utils.data.DataLoader(
+        testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
+        drop_last=False
+    )
+    return train_sampler, trainloader, validloader, testloader
 
 def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1):
     if 'cifar' in dataset or 'svhn' in dataset:
@@ -150,7 +222,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         total_trainset.targets = [lb for _, lb in total_trainset.samples]
     elif dataset == 'reduced_imagenet':
         # randomly chosen indices
-#         idx120 = sorted(random.sample(list(range(1000)), k=120))
+        # idx120 = sorted(random.sample(list(range(1000)), k=120))
         idx120 = [16, 23, 52, 57, 76, 93, 95, 96, 99, 121, 122, 128, 148, 172, 181, 189, 202, 210, 232, 238, 257, 258, 259, 277, 283, 289, 295, 304, 307, 318, 322, 331, 337, 338, 345, 350, 361, 375, 376, 381, 388, 399, 401, 408, 424, 431, 432, 440, 447, 462, 464, 472, 483, 497, 506, 512, 530, 541, 553, 554, 557, 564, 570, 584, 612, 614, 619, 626, 631, 632, 650, 657, 658, 660, 674, 675, 680, 682, 691, 695, 699, 711, 734, 736, 741, 754, 757, 764, 769, 770, 780, 781, 787, 797, 799, 811, 822, 829, 830, 835, 837, 842, 843, 845, 873, 883, 897, 900, 902, 905, 913, 920, 925, 937, 938, 940, 941, 944, 949, 959]
         total_trainset = ImageNet(root=os.path.join(dataroot, 'imagenet-pytorch'), transform=transform_train)
         testset = ImageNet(root=os.path.join(dataroot, 'imagenet-pytorch'), split='val', transform=transform_test)
@@ -200,12 +272,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             valid_idx = [i for i in valid_idx if total_trainset.targets[i] == target_lb]
 
         train_sampler = SubsetRandomSampler(train_idx)
-        valid_sampler = SubsetSampler(valid_idx)
+        valid_sampler = SubsetRandomSampler(valid_idx)
 
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(Subset(total_trainset, train_idx), num_replicas=dist.get_world_size(), rank=dist.get_rank())
     else:
-        valid_sampler = SubsetSampler([])
+        valid_sampler = SubsetRandomSampler([])
 
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(total_trainset, num_replicas=dist.get_world_size(), rank=dist.get_rank())
@@ -217,7 +289,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
         sampler=valid_sampler, drop_last=False)
-
+    validloader.dataset.transforms = transform_test # ToTensor->Normalize
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
         drop_last=False
@@ -257,12 +329,12 @@ class Augmentation(object):
     def __call__(self, img):
         for _ in range(1):
             policy = random.choice(self.policies)
+            self.policy = policy
             for name, pr, level in policy:
                 if random.random() > pr:
                     continue
                 img = apply_augment(img, name, level)
         return img
-
 
 class EfficientNetRandomCrop:
     def __init__(self, imgsize, min_covered=0.1, aspect_ratio_range=(3./4, 4./3), area_range=(0.08, 1.0), max_attempts=10):

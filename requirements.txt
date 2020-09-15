@@ -11,3 +11,5 @@ ray
 matplotlib
 psutil
 requests
+gorilla
+ray[tune]

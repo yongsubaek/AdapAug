@@ -43,6 +43,8 @@ class CrossEntropyLabelSmooth(torch.nn.Module):
             loss = torch.mean(torch.sum(loss, dim=1))
         elif self.reduction == 'sum':
             loss = loss.sum()
+        elif self.reduction == "batched_sum":
+            loss = torch.sum(loss, dim=1)
         return loss
 
 
