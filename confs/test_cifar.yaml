@@ -2,8 +2,8 @@ model:
   type: wresnet40_2
 dataset: cifar10
 test_dataset: cifar10
-aug: fa_reduced_cifar10 
-cutout: 16 
+aug: default 
+cutout: 16
 batch: 128
 epoch: 200
 lr: 0.1

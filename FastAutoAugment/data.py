@@ -12,7 +12,7 @@ from PIL import Image
 from torch.utils.data import SubsetRandomSampler, Sampler, Subset, ConcatDataset
 import torch.distributed as dist
 from torchvision.transforms import transforms
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedShuffleSplit, PredefinedSplit
 from theconf import Config as C
 
 from FastAutoAugment.archive import arsaug_policy, autoaug_policy, autoaug_paper_cifar10, fa_reduced_cifar10, fa_reduced_svhn, fa_resnet50_rimagenet
@@ -33,6 +33,41 @@ _IMAGENET_PCA = {
 }
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 
+class GrAugCIFAR10(torchvision.datasets.CIFAR10):
+    def __init__(self, root, gr_assign, gr_policies, train=True, transform=None, target_transform=None,\
+                 download=False):
+        super(GrAugCIFAR10, self).__init__(root, train=train, transform=transform,\
+                                          target_transform=target_transform, download=download)
+        self.transform = transform
+        self.gr_assign = gr_assign
+        self.gr_policies = gr_policies
+        self.gr_ids = self.gr_assign(self.data, self.targets)
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (image, target) where target is index of the target class.
+        """
+        img, target = self.data[index], self.targets[index]
+
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        img = Image.fromarray(img)
+
+        if self.transform is not None:
+            gr_id = self.gr_ids[index]
+            # self.transform.transforms.insert(0, Augmentation(self.gr_policies[gr_id]))
+            img = Augmentation(self.gr_policies[gr_id])(img)
+            img = self.transform(img)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return img, target
+
 def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False, target_lb=-1):
     """
     generate dataloaders for controller training
@@ -42,7 +77,7 @@ def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),z
     ])
     transform_test = transforms.Compose([
         transforms.ToTensor(),
@@ -106,7 +141,7 @@ def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False
     )
     return train_sampler, trainloader, validloader, testloader
 
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1):
+def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None):
     if 'cifar' in dataset or 'svhn' in dataset:
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -158,6 +193,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     if isinstance(C.get()['aug'], list):
         logger.debug('augmentation provided.')
         transform_train.transforms.insert(0, Augmentation(C.get()['aug']))
+    elif isinstance(C.get()['aug'], dict):
+        # group version
+        logger.debug('group augmentation provided.')
     else:
         logger.debug('augmentation: %s' % C.get()['aug'])
         if C.get()['aug'] == 'fa_reduced_cifar10':
@@ -184,8 +222,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
 
     if dataset == 'cifar10':
-        total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
-        testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
+        if isinstance(C.get()['aug'], dict):
+            # transform_train = transforms.ToTensor()
+            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+        else:
+            total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
+        testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=1, test_size=46000, random_state=0)   # 4000 trainset
@@ -262,22 +304,35 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
 
     train_sampler = None
     if split > 0.0:
-        sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
-        for _ in range(split_idx + 1):
+        if gr_assign is not None:
+            idx2gr = gr_assign(total_trainset.data, label=total_trainset.targets)
+            ps = PredefinedSplit(idx2gr)
+            ps = ps.split()
+            for _ in range(split_idx + 1):
+                _, gr_split_idx = next(ps)
+            targets = [total_trainset.targets[idx] for idx in gr_split_idx]
+            total_trainset = Subset(total_trainset, gr_split_idx)
+            total_trainset.targets = targets
+            sss = StratifiedShuffleSplit(n_splits=1, test_size=split, random_state=0)
+            sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
             train_idx, valid_idx = next(sss)
+        else:
+            sss = StratifiedShuffleSplit(n_splits=C.get()["cv_num"], test_size=split, random_state=0)
+            sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
+            for _ in range(split_idx + 1):
+                train_idx, valid_idx = next(sss)
 
         if target_lb >= 0:
             train_idx = [i for i in train_idx if total_trainset.targets[i] == target_lb]
             valid_idx = [i for i in valid_idx if total_trainset.targets[i] == target_lb]
 
         train_sampler = SubsetRandomSampler(train_idx)
-        valid_sampler = SubsetRandomSampler(valid_idx)
+        valid_sampler = SubsetSampler(valid_idx)
 
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(Subset(total_trainset, train_idx), num_replicas=dist.get_world_size(), rank=dist.get_rank())
     else:
-        valid_sampler = SubsetRandomSampler([])
+        valid_sampler = SubsetSampler([])
 
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(total_trainset, num_replicas=dist.get_world_size(), rank=dist.get_rank())
@@ -289,7 +344,6 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
         sampler=valid_sampler, drop_last=False)
-    validloader.dataset.transforms = transform_test # ToTensor->Normalize
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
         drop_last=False

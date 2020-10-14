@@ -5,7 +5,7 @@ test_dataset: cifar10
 aug: fa_reduced_cifar10
 cutout: 16
 batch: 128
-epoch: 200
+epoch: 1
 lr: 0.1
 lr_schedule:
   type: 'cosine'

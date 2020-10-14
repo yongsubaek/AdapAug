@@ -12,7 +12,6 @@ import ray
 import gorilla
 from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
-# from ray.tune.suggest import HyperOptSearch
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune import register_trainable, run_experiments
 from tqdm import tqdm
@@ -124,7 +123,7 @@ if __name__ == '__main__':
     cv_num = args.cv_num
     copied_c = copy.deepcopy(C.get().conf)
 
-    dataloaders = get_custom_dataloaders(C.get()['dataset'], C.get()['batch'], C.get()['dataroot'], 0.4)
+    dataloaders = get_custom_dataloaders(C.get()['dataset'], C.get()['batch'], C.get()['dataroot'], args.cv_ratio)
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')

@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from collections import OrderedDict, defaultdict
+from collections.abc import Iterable
 
 import torch
 
@@ -29,9 +30,76 @@ from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 
-
+VERSION = 1
+NUM_GROUP = 5
 top1_valid_by_cv = defaultdict(lambda: list)
 
+def gen_assign_group(version, num_group=5):
+    if version == 1:
+        return assign_group
+    elif version == 2:
+        return lambda data, label=None: assign_group2(data,label,num_group)
+    elif version == 3:
+        return lambda data, label=None: assign_group3(data,label,num_group)
+
+def assign_group(data, label=None):
+    """
+    input: data(batch of images), label(optional, same length with data)
+    return: assigned group numbers for data (same length with data)
+    to be used before training B.O.
+    """
+    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+    # exp1: group by manualy classified classes
+    groups = {}
+    groups[0] = ['plane', 'ship']
+    groups[1] = ['car', 'truck']
+    groups[2] = ['horse', 'deer']
+    groups[3] = ['dog', 'cat']
+    groups[4] = ['frog', 'bird']
+    def _assign_group_id1(_label):
+        gr_id = None
+        for key in groups:
+            if classes[_label] in groups[key]:
+                gr_id = key
+                return gr_id
+        if gr_id is None:
+            raise ValueError(f"label {_label} is not given properly. classes[label] = {classes[_label]}")
+    if not isinstance(label, Iterable):
+        return _assign_group_id1(label)
+    return list(map(_assign_group_id1, label))
+
+def assign_group2(data, label=None, num_group=5):
+    """
+    input: data(batch of images), label(optional, same length with data)
+    return: randomly assigned group numbers for data (same length with data)
+    to be used before training B.O.
+    """
+    _size = len(data)
+    return np.random.randint(0, num_group, size=_size)
+
+def assign_group3(data, label=None, num_group=5):
+    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+    _classes = list(copy.deepcopy(classes))
+    np.random.shuffle(_classes)
+    groups = defaultdict(lambda: [])
+    num_cls_per_gr = len(_classes) // num_group + 1
+    for i in range(num_group):
+        for _ in range(num_cls_per_gr):
+            if len(_classes) == 0:
+                break
+            groups[i].append(_classes.pop())
+
+    def _assign_group_id1(_label):
+        gr_id = None
+        for key in groups:
+            if classes[_label] in groups[key]:
+                gr_id = key
+                return gr_id
+        if gr_id is None:
+            raise ValueError(f"label {_label} is not given properly. classes[label] = {classes[_label]}")
+    if not isinstance(label, Iterable):
+        return _assign_group_id1(label)
+    return list(map(_assign_group_id1, label))
 
 def step_w_log(self):
     original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
@@ -64,19 +132,17 @@ def _get_path(dataset, model, tag, basemodel=True):
 
 
 @ray.remote(num_gpus=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_fold, save_path=None, skip_exist=False):
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, gr_id, save_path=None, skip_exist=False, gr_assign=None):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_fold, save_path=save_path, only_eval=skip_exist)
-    return C.get()['model']['type'], cv_fold, result
-
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, gr_id, save_path=save_path, only_eval=skip_exist, gr_assign=gr_assign)
+    return C.get()['model']['type'], gr_id, result
 
 def eval_tta(config, augment, reporter):
     C.get()
     C.get().conf = config
-    cv_ratio_test, cv_fold, save_path = augment['cv_ratio_test'], augment['cv_fold'], augment['save_path']
+    cv_ratio_test, gr_id, save_path = augment['cv_ratio_test'], augment['gr_id'], augment['save_path']
 
     # setup - provided augmentation rules
     C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
@@ -92,7 +158,7 @@ def eval_tta(config, augment, reporter):
 
     loaders = []
     for _ in range(augment['num_policy']):  # TODO
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_fold)
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=gr_id, gr_assign=gen_assign_group(version=VERSION, num_group=NUM_GROUP))
         loaders.append(iter(validloader))
         del tl, tl2
 
@@ -111,7 +177,7 @@ def eval_tta(config, augment, reporter):
                 pred = model(data)
 
                 loss = loss_fn(pred, label)
-                losses.append(loss.detach().cpu().numpy())
+                losses.append(loss.detach().cpu().numpy().reshape(-1))
 
                 _, pred = pred.topk(1, 1, True, True)
                 pred = pred.t()
@@ -157,8 +223,10 @@ if __name__ == '__main__':
     parser.add_argument('--per-class', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
-    parser.add_argument('--cv-num', type=int, default=1)
+    # parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--exp_name', type=str)
+    parser.add_argument('--gr-num', type=int, default=5)
+    parser.add_argument('--random', action='store_true')
     parser.add_argument('--rpc', type=int, default=10)
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
@@ -172,26 +240,28 @@ if __name__ == '__main__':
     logger.info('initialize ray...')
     ray.init(address=args.redis)
 
+    num_process_per_gpu = 2
     num_result_per_cv = args.rpc
-    cv_num = args.cv_num
-    C.get()["cv_num"] = cv_num
+    gr_num = args.gr_num
+    # assert gr_num == 5, "version1 requires gr-num == 5."
+    C.get()["cv_num"] = gr_num
     copied_c = copy.deepcopy(C.get().conf)
-    # dataloaders = get_dataloaders(C.get()['dataset'], C.get()['batch'], C.get()['dataroot'], args.cv_ratio)
+
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
-    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
+    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (gr_num, args.cv_ratio))
     w.start(tag='train_no_aug')
-    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
+    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(gr_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "default", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
-        for i in range(cv_num)]
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        for i in range(gr_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False
     for epoch in tqdm_epoch:
         while True:
             epochs_per_cv = OrderedDict()
-            for cv_idx in range(cv_num):
+            for cv_idx in range(gr_num):
                 try:
                     latest_ckpt = torch.load(paths[cv_idx])
                     if 'epoch' not in latest_ckpt:
@@ -201,9 +271,9 @@ if __name__ == '__main__':
                 except Exception as e:
                     continue
             tqdm_epoch.set_postfix(epochs_per_cv)
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+            if len(epochs_per_cv) == gr_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
                 is_done = True
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+            if len(epochs_per_cv) == gr_num and min(epochs_per_cv.values()) >= epoch:
                 break
             time.sleep(10)
         if is_done:
@@ -229,41 +299,34 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2
-    final_policy_set = []
+    final_policy_group = defaultdict(lambda : [])
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
     for _ in range(1):  # run multiple times.
-        for cv_fold in range(cv_num):
-            name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
+        for gr_id in range(gr_num):
+            final_policy_set = []
+            name = "search_%s_%s_group%d_%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, args.cv_ratio)
             print(name)
             register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
             algo = HyperOptSearch(space, metric=reward_attr)
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*8)
-
             exp_config = {
                 name: {
                     'run': name,
                     'num_samples': 4 if args.smoke_test else args.num_search,
-                    'resources_per_trial': {'gpu': 1. / num_process_per_gpu},
+                    'resources_per_trial': {'gpu': 1./num_process_per_gpu},
                     'stop': {'training_iteration': args.num_policy},
                     'config': {
-                        'dataroot': args.dataroot, 'save_path': paths[cv_fold],
-                        'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
+                        'dataroot': args.dataroot, 'save_path': paths[gr_id],
+                        'cv_ratio_test': args.cv_ratio, 'gr_id': gr_id,
                         'num_op': args.num_op, 'num_policy': args.num_policy
                     },
                 }
             }
             results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
             print()
-            results = [x for x in results if x.last_result is not None]
-            try:
-                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-            except:
-                print(f"len: {len(results)}")
-                print(f"first elem: {result[0]}")
-                print(f"first elem type: {type(result[0])}")
-                raise ValueError(str(result.keys()))
+            results = [x for x in results if x.last_result]
+            results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
             # calculate computation usage
             for result in results:
                 total_computation += result.last_result['elapsed_time']
@@ -274,18 +337,25 @@ if __name__ == '__main__':
 
                 final_policy = remove_deplicates(final_policy)
                 final_policy_set.extend(final_policy)
+            final_policy_group[gr_id].extend(final_policy_set)
+            probs = []
+            for aug in final_policy_set:
+                for op in aug:
+                    probs.append(op[1])
+            prob = sum(probs) / len(probs)
+            print("mean_prob: {:.2f}".format(prob))
 
-    logger.info(json.dumps(final_policy_set))
-    logger.info('final_policy=%d' % len(final_policy_set))
+    logger.info(json.dumps(final_policy_group))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-
+    #@TODO: training data -> augmentation
+    # raise NotImplementedError
     num_experiments = 4
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
-        [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_set, 0.0, 0, save_path=augment_path[_]) for _ in range(num_experiments)]
+        [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gen_assign_group(version=VERSION, num_group=NUM_GROUP)) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False
