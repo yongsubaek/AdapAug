@@ -632,7 +632,7 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
                 )
 
                 # save checkpoint
-                if is_master and save_path:
+                if is_master and save_path and epoch_start != max_epoch:
                     logger.info('save model@%d to %s, err=%.4f' % (epoch, save_path, 1 - best_top1))
                     torch.save({
                         'epoch': epoch,

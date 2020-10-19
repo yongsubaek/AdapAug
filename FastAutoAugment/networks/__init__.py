@@ -100,4 +100,5 @@ def num_class(dataset):
         'reduced_svhn': 10,
         'imagenet': 1000,
         'reduced_imagenet': 120,
+        "cifar10_svhn" : 20
     }[dataset]

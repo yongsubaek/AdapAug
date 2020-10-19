@@ -9,7 +9,7 @@ import torch
 import torchvision
 from PIL import Image
 
-from torch.utils.data import SubsetRandomSampler, Sampler, Subset, ConcatDataset
+from torch.utils.data import Dataset, SubsetRandomSampler, Sampler, Subset, ConcatDataset
 import torch.distributed as dist
 from torchvision.transforms import transforms
 from sklearn.model_selection import StratifiedShuffleSplit, PredefinedSplit
@@ -32,6 +32,67 @@ _IMAGENET_PCA = {
     ]
 }
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+
+class GrAugMix(Dataset):
+    def __init__(self, datasets, root, gr_assign=None, gr_policies=None, train=True, download=False, transform=None, target_transform=None):
+        train_size = 50000
+        test_size = 10000
+        num_data = len(datasets)
+        size_per_dataset = int((train_size if train else test_size) / num_data)
+        total_datas = []
+        total_targets = []
+        for i, dataname in enumerate(datasets):
+            if "cifar10" == dataname:
+                dataset = torchvision.datasets.CIFAR10(root=root, train=train, download=download, transform=None, target_transform=None)
+                dataset.targets = [x+(i*10) for x in dataset.targets]
+            elif "svhn" == dataname:
+                dataset = torchvision.datasets.SVHN(root=root, split='train' if train == True else 'test', download=download, transform=None, target_transform=None)
+                dataset.targets = [x+(i*10) for x in dataset.labels]
+                dataset.data = np.transpose(dataset.data, (0,2,3,1))
+            else:
+                raise NotImplementedError
+            assert len(dataset.data) == len(dataset.targets), f"data len {len(dataset.data)}, target len {len(dataset.targets)}"
+            if size_per_dataset < len(dataset):
+                sss = StratifiedShuffleSplit(n_splits=1, test_size=len(dataset)-size_per_dataset, random_state=0)
+                sss = sss.split(list(range(len(dataset))), dataset.targets)
+                train_idx, _ = next(sss)
+                dataset.data = dataset.data[train_idx]
+                dataset.targets = [dataset.targets[idx] for idx in train_idx]
+            total_datas.append(dataset.data)
+            total_targets.append(dataset.targets)
+        self.transform = transform
+        self.target_transform = target_transform
+
+        self.data = np.concatenate(total_datas, 0)
+        self.targets = sum(total_targets, [])
+        assert len(self.data) == len(self.targets), f"data len {len(self.data)}, target len {len(self.targets)}"
+        # self.dataset = ConcatDataset(total_datasets)
+
+        self.gr_assign = gr_assign
+        self.gr_policies = gr_policies
+        self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        img, target = self.data[index], self.targets[index]
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        img = Image.fromarray(img)
+
+        if self.transform is not None:
+            if self.gr_ids is not None:
+                gr_id = self.gr_ids[index]
+                # self.transform.transforms.insert(0, Augmentation(self.gr_policies[gr_id]))
+                img = Augmentation(self.gr_policies[gr_id])(img)
+            img = self.transform(img)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return img, target
+
 
 class GrAugCIFAR10(torchvision.datasets.CIFAR10):
     def __init__(self, root, gr_assign, gr_policies, train=True, transform=None, target_transform=None,\
@@ -77,7 +138,7 @@ def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),z
+        transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
     ])
     transform_test = transforms.Compose([
         transforms.ToTensor(),
@@ -295,6 +356,24 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             testset.samples[idx] = (testset.samples[idx][0], idx120.index(testset.samples[idx][1]))
         testset = Subset(testset, test_idx)
         print('reduced_imagenet train=', len(total_trainset))
+    elif dataset == "cifar10_svhn":
+        if isinstance(C.get()['aug'], dict):
+            # last stage: benchmark test
+            # raise NotImplementedError
+            total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=C.get()['aug'], root=dataroot, train=True, download=False, transform=transform_train)
+        else:
+            # childnet training
+            # cifar10_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
+            # svhn_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
+            # svhn_trainset.labels = [ i+10 for i in svhn_trainset.labels]
+            # total_trainset = ConcatDataset([cifar10_trainset, svhn_trainset])
+            # total_trainset.targets = cifar10_trainset.targets + svhn_trainset.labels
+            total_trainset = GrAugMix(dataset.split("_"), root=dataroot, train=True, download=False, transform=transform_train)
+        # cifar10_testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
+        # svhn_testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
+        # svhn_testset.labels = [ i+10 for i in svhn_testset.labels]
+        # testset = ConcatDataset([cifar10_testset, svhn_testset])
+        testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
