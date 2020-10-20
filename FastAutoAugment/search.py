@@ -112,23 +112,23 @@ def eval_tta(config, augment, reporter):
                 pred = model(data)
 
                 loss = loss_fn(pred, label)
-                losses.append(loss.detach().cpu().numpy())
+                losses.append(loss.detach().cpu().numpy().reshape(1,-1)) # (1,N)
 
                 _, pred = pred.topk(1, 1, True, True)
                 pred = pred.t()
-                correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy().reshape(-1)
+                correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
                 corrects.append(correct)
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze()
+            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze()
+            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
-                'cnt': len(losses)
+                'cnt': corrects_max.size
             })
             del corrects, corrects_max
     except StopIteration:

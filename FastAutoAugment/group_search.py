@@ -135,7 +135,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=0.5)
+@ray.remote(num_gpus=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None):
     C.get()
     C.get().conf = config
@@ -181,24 +181,24 @@ def eval_tta(config, augment, reporter):
 
                 pred = model(data)
 
-                loss = loss_fn(pred, label)
-                losses.append(loss.detach().cpu().numpy().reshape(-1))
+                loss = loss_fn(pred, label) # (N)
+                losses.append(loss.detach().cpu().numpy().reshape(1,-1)) # (1,N)
 
                 _, pred = pred.topk(1, 1, True, True)
                 pred = pred.t()
-                correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy().reshape(-1)
+                correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
                 corrects.append(correct)
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze()
+            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze()
+            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
-                'cnt': len(losses)
+                'cnt': corrects_max.size
             })
             del corrects, corrects_max
     except StopIteration:
@@ -217,7 +217,7 @@ if __name__ == '__main__':
     w = PyStopwatch()
 
     parser = ConfigArgumentParser(conflict_handler='resolve')
-    parser.add_argument('--dataroot', type=str, default='/mnt/hdd0/data/', help='torchvision data folder')
+    parser.add_argument('--dataroot', type=str, default='/mnt/ssd/data/', help='torchvision data folder')
     parser.add_argument('--until', type=int, default=5)
     parser.add_argument('--num-op', type=int, default=2)
     parser.add_argument('--num-policy', type=int, default=5)
@@ -229,7 +229,6 @@ if __name__ == '__main__':
     parser.add_argument('--per-class', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
-    # parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--exp_name', type=str)
     parser.add_argument('--gr-num', type=int, default=2)
     parser.add_argument('--random', action='store_true')
@@ -248,7 +247,6 @@ if __name__ == '__main__':
     logger.info('initialize ray...')
     ray.init(address=args.redis)
 
-    num_process_per_gpu = 3
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
     gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
@@ -260,7 +258,7 @@ if __name__ == '__main__':
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
-    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(gr_num)]
+    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
         train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], args.cv_ratio, i, save_path=paths[i], skip_exist=True)
@@ -308,6 +306,8 @@ if __name__ == '__main__':
             space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
+
+    num_process_per_gpu = 2
     final_policy_group = defaultdict(lambda : [])
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
@@ -360,13 +360,13 @@ if __name__ == '__main__':
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    # g0 = fa_reduced_cifar10()
-    # g1 = fa_reduced_svhn()
-    # final_policy_group = "fa_reduced_svhn"#{0: g0, 1:g1}
+    g0 = fa_reduced_cifar10()
+    g1 = fa_reduced_svhn()
+    bench_policy_group = {0: g0, 1:g1}
     num_experiments = 4
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
      [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gr_assign) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
