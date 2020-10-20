@@ -135,18 +135,19 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, gr_id, save_path=None, skip_exist=False, gr_assign=None):
+@ray.remote(num_gpus=0.5)
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, gr_id, save_path=save_path, only_eval=skip_exist, gr_assign=gr_assign)
-    return C.get()['model']['type'], gr_id, result
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, gr_assign=gr_assign)
+    return C.get()['model']['type'], cv_id, result
 
 def eval_tta(config, augment, reporter):
     C.get()
     C.get().conf = config
-    cv_ratio_test, gr_id, save_path = augment['cv_ratio_test'], augment['gr_id'], augment['save_path']
+    cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
+    gr_id = augment["gr_id"]
 
     # setup - provided augmentation rules
     C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
@@ -162,7 +163,7 @@ def eval_tta(config, augment, reporter):
 
     loaders = []
     for _ in range(augment['num_policy']):  # TODO
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=gr_id, gr_assign=augment["gr_assign"])
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
         loaders.append(iter(validloader))
         del tl, tl2
 
@@ -221,6 +222,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-op', type=int, default=2)
     parser.add_argument('--num-policy', type=int, default=5)
     parser.add_argument('--num-search', type=int, default=200)
+    parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--cv-ratio', type=float, default=0.4)
     parser.add_argument('--decay', type=float, default=-1)
     parser.add_argument('--redis', type=str)
@@ -229,7 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('--smoke-test', action='store_true')
     # parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--exp_name', type=str)
-    parser.add_argument('--gr-num', type=int, default=5)
+    parser.add_argument('--gr-num', type=int, default=2)
     parser.add_argument('--random', action='store_true')
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--version', type=int, default=1)
@@ -249,116 +251,118 @@ if __name__ == '__main__':
     num_process_per_gpu = 3
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
-    gr_assign = gen_assign_group(version=args.version, num_group=args.gr_num)
+    gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
     # assert gr_num == 5, "version1 requires gr-num == 5."
-    C.get()["cv_num"] = gr_num
+    cv_num = args.cv_num
+    C.get()["cv_num"] = cv_num
     copied_c = copy.deepcopy(C.get().conf)
 
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
-    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (gr_num, args.cv_ratio))
-    # w.start(tag='train_no_aug')
-    # paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(gr_num)]
-    # print(paths)
-    # reqs = [
-    #     train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], args.cv_ratio, i, save_path=paths[i], skip_exist=True)
-    #     for i in range(gr_num)]
-    #
-    # tqdm_epoch = tqdm(range(C.get()['epoch']))
-    # is_done = False
-    # for epoch in tqdm_epoch:
-    #     while True:
-    #         epochs_per_cv = OrderedDict()
-    #         for cv_idx in range(gr_num):
-    #             try:
-    #                 latest_ckpt = torch.load(paths[cv_idx])
-    #                 if 'epoch' not in latest_ckpt:
-    #                     epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
-    #                     continue
-    #                 epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
-    #             except Exception as e:
-    #                 continue
-    #         tqdm_epoch.set_postfix(epochs_per_cv)
-    #         if len(epochs_per_cv) == gr_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
-    #             is_done = True
-    #         if len(epochs_per_cv) == gr_num and min(epochs_per_cv.values()) >= epoch:
-    #             break
-    #         time.sleep(10)
-    #     if is_done:
-    #         break
-    #
-    # logger.info('getting results...')
-    # pretrain_results = ray.get(reqs)
-    # for r_model, r_cv, r_dict in pretrain_results:
-    #     logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
-    # logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
-    #
-    # if args.until == 1:
-    #     sys.exit(0)
-    #
-    # logger.info('----- Search Test-Time Augmentation Policies -----')
-    # w.start(tag='search')
-    #
-    # ops = augment_list(False)
-    # space = {}
-    # for i in range(args.num_policy):
-    #     for j in range(args.num_op):
-    #         space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-    #         space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
-    #         space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
-    # final_policy_group = defaultdict(lambda : [])
-    # total_computation = 0
-    # reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    # for _ in range(1):  # run multiple times.
-    #     for gr_id in range(gr_num):
-    #         final_policy_set = []
-    #         name = "search_%s_%s_group%d_%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, args.cv_ratio)
-    #         print(name)
-    #         register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
-    #         algo = HyperOptSearch(space, metric=reward_attr)
-    #         algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*4)
-    #         exp_config = {
-    #             name: {
-    #                 'run': name,
-    #                 'num_samples': 4 if args.smoke_test else args.num_search,
-    #                 'resources_per_trial': {'gpu': 1./num_process_per_gpu},
-    #                 'stop': {'training_iteration': args.num_policy},
-    #                 'config': {
-    #                     'dataroot': args.dataroot, 'save_path': paths[gr_id],
-    #                     'cv_ratio_test': args.cv_ratio, 'gr_id': gr_id,
-    #                     'num_op': args.num_op, 'num_policy': args.num_policy,
-    #                     "gr_assign": gr_assign
-    #                 },
-    #             }
-    #         }
-    #         results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
-    #         print()
-    #         results = [x for x in results if x.last_result]
-    #         results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-    #         # calculate computation usage
-    #         for result in results:
-    #             total_computation += result.last_result['elapsed_time']
-    #
-    #         for result in results[:num_result_per_cv]:
-    #             final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
-    #             logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
-    #
-    #             final_policy = remove_deplicates(final_policy)
-    #             final_policy_set.extend(final_policy)
-    #         final_policy_group[gr_id].extend(final_policy_set)
-    #         probs = []
-    #         for aug in final_policy_set:
-    #             for op in aug:
-    #                 probs.append(op[1])
-    #         prob = sum(probs) / len(probs)
-    #         print("mean_prob: {:.2f}".format(prob))
-    #
-    # logger.info(json.dumps(final_policy_group))
-    # logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
-    # logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
+    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
+    w.start(tag='train_no_aug')
+    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(gr_num)]
+    print(paths)
+    reqs = [
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        for i in range(cv_num)]
+
+    tqdm_epoch = tqdm(range(C.get()['epoch']))
+    is_done = False
+    for epoch in tqdm_epoch:
+        while True:
+            epochs_per_cv = OrderedDict()
+            for cv_idx in range(cv_num):
+                try:
+                    latest_ckpt = torch.load(paths[cv_idx])
+                    if 'epoch' not in latest_ckpt:
+                        epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
+                        continue
+                    epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
+                except Exception as e:
+                    continue
+            tqdm_epoch.set_postfix(epochs_per_cv)
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+                is_done = True
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+                break
+            time.sleep(10)
+        if is_done:
+            break
+
+    logger.info('getting results...')
+    pretrain_results = ray.get(reqs)
+    for r_model, r_cv, r_dict in pretrain_results:
+        logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+    logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
+
+    if args.until == 1:
+        sys.exit(0)
+
+    logger.info('----- Search Test-Time Augmentation Policies -----')
+    w.start(tag='search')
+
+    ops = augment_list(False)
+    space = {}
+    for i in range(args.num_policy):
+        for j in range(args.num_op):
+            space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
+            space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+            space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
+    final_policy_group = defaultdict(lambda : [])
+    total_computation = 0
+    reward_attr = 'top1_valid'      # top1_valid or minus_loss
+    for _ in range(2):  # run multiple times.
+        for gr_id in range(gr_num):
+            for cv_id in range(cv_num):
+                final_policy_set = []
+                name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
+                print(name)
+                register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+                algo = HyperOptSearch(space, metric=reward_attr)
+                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*4)
+                exp_config = {
+                    name: {
+                        'run': name,
+                        'num_samples': 4 if args.smoke_test else args.num_search,
+                        'resources_per_trial': {'gpu': 1./num_process_per_gpu},
+                        'stop': {'training_iteration': args.num_policy},
+                        'config': {
+                            'dataroot': args.dataroot, 'save_path': paths[cv_id],
+                            'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
+                            'num_op': args.num_op, 'num_policy': args.num_policy,
+                            "gr_assign": gr_assign, "gr_id": gr_id
+                        },
+                    }
+                }
+                results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                print()
+                results = [x for x in results if x.last_result]
+                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+                # calculate computation usage
+                for result in results:
+                    total_computation += result.last_result['elapsed_time']
+
+                for result in results[:num_result_per_cv]:
+                    final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                    logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+
+                    final_policy = remove_deplicates(final_policy)
+                    final_policy_set.extend(final_policy)
+                final_policy_group[gr_id].extend(final_policy_set)
+                # probs = []
+                # for aug in final_policy_set:
+                #     for op in aug:
+                #         probs.append(op[1])
+                # prob = sum(probs) / len(probs)
+                # print("mean_prob: {:.2f}".format(prob))
+
+    logger.info(json.dumps(final_policy_group))
+    logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
+    logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    g0 = fa_reduced_cifar10()
-    g1 = fa_reduced_svhn()
-    final_policy_group = {0: g0, 1:g1}
+    # g0 = fa_reduced_cifar10()
+    # g1 = fa_reduced_svhn()
+    # final_policy_group = "fa_reduced_svhn"#{0: g0, 1:g1}
     num_experiments = 4
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]

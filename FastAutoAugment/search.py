@@ -121,10 +121,10 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.min(losses, axis=0).squeeze()
+            losses_min = np.mean(losses, axis=0).squeeze()
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.max(corrects, axis=0).squeeze()
+            corrects_max = np.mean(corrects, axis=0).squeeze()
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
@@ -230,11 +230,11 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2
+    num_process_per_gpu = 3
     final_policy_set = []
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    for _ in range(1):  # run multiple times.
+    for _ in range(2):  # run multiple times.
         for cv_fold in range(cv_num):
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
@@ -282,7 +282,7 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
 
-    num_experiments = 4
+    num_experiments = 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \

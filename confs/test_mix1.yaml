@@ -5,7 +5,7 @@ test_dataset: cifar10_svhn
 aug: default
 cutout: 16
 batch: 128
-epoch: 220
+epoch: 200
 lr: 0.1
 lr_schedule:
   type: 'cosine'

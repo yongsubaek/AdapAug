@@ -202,7 +202,7 @@ def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False
     )
     return train_sampler, trainloader, validloader, testloader
 
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None):
+def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=0):
     if 'cifar' in dataset or 'svhn' in dataset:
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -359,20 +359,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     elif dataset == "cifar10_svhn":
         if isinstance(C.get()['aug'], dict):
             # last stage: benchmark test
-            # raise NotImplementedError
             total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=C.get()['aug'], root=dataroot, train=True, download=False, transform=transform_train)
         else:
-            # childnet training
-            # cifar10_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
-            # svhn_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
-            # svhn_trainset.labels = [ i+10 for i in svhn_trainset.labels]
-            # total_trainset = ConcatDataset([cifar10_trainset, svhn_trainset])
-            # total_trainset.targets = cifar10_trainset.targets + svhn_trainset.labels
             total_trainset = GrAugMix(dataset.split("_"), root=dataroot, train=True, download=False, transform=transform_train)
-        # cifar10_testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
-        # svhn_testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
-        # svhn_testset.labels = [ i+10 for i in svhn_testset.labels]
-        # testset = ConcatDataset([cifar10_testset, svhn_testset])
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
@@ -387,7 +376,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             idx2gr = gr_assign(total_trainset.data, label=total_trainset.targets)
             ps = PredefinedSplit(idx2gr)
             ps = ps.split()
-            for _ in range(split_idx + 1):
+            for _ in range(gr_id + 1):
                 _, gr_split_idx = next(ps)
             targets = [total_trainset.targets[idx] for idx in gr_split_idx]
             total_trainset = Subset(total_trainset, gr_split_idx)
