@@ -431,7 +431,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     return metrics
 
 
-def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None):
+def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='test', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None):
     total_batch = C.get()["batch"]
     dataset = C.get()["dataset"]
     if dataloaders:
