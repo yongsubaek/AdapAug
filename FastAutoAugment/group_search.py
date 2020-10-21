@@ -217,7 +217,7 @@ if __name__ == '__main__':
     w = PyStopwatch()
 
     parser = ConfigArgumentParser(conflict_handler='resolve')
-    parser.add_argument('--dataroot', type=str, default='/mnt/ssd/data/', help='torchvision data folder')
+    parser.add_argument('--dataroot', type=str, default='/mnt/hdd0/data/', help='torchvision data folder')
     parser.add_argument('--until', type=int, default=5)
     parser.add_argument('--num-op', type=int, default=2)
     parser.add_argument('--num-policy', type=int, default=5)
@@ -261,7 +261,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "default", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
@@ -307,7 +307,7 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2
+    num_process_per_gpu = 3
     final_policy_group = defaultdict(lambda : [])
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
