@@ -261,7 +261,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "default", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "clean_data", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))

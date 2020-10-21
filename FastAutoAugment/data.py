@@ -274,17 +274,17 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             transform_train.transforms.insert(0, Augmentation(autoaug_paper_cifar10()))
         elif C.get()['aug'] == 'autoaug_extend':
             transform_train.transforms.insert(0, Augmentation(autoaug_policy()))
-        elif C.get()['aug'] in ['default']:
+        elif C.get()['aug'] in ['default', "clean_data"]:
             pass
         else:
             raise ValueError('not found augmentations. %s' % C.get()['aug'])
 
     if C.get()['cutout'] > 0:
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
-
+    if C.get()['aug'] == "clean_data":
+        transform_train = transform_test
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
-            # transform_train = transforms.ToTensor()
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)

@@ -121,10 +121,10 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+            losses_min = np.min(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            corrects_max = np.max(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
@@ -147,7 +147,7 @@ if __name__ == '__main__':
     w = PyStopwatch()
 
     parser = ConfigArgumentParser(conflict_handler='resolve')
-    parser.add_argument('--dataroot', type=str, default='/mnt/hdd0/data/', help='torchvision data folder')
+    parser.add_argument('--dataroot', type=str, default='/mnt/hdd1/data/', help='torchvision data folder')
     parser.add_argument('--until', type=int, default=5)
     parser.add_argument('--num-op', type=int, default=2)
     parser.add_argument('--num-policy', type=int, default=5)
@@ -184,7 +184,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "default", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "clean_data", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
