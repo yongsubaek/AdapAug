@@ -3,7 +3,6 @@ import os
 import sys
 import time
 from collections import OrderedDict, defaultdict
-from collections.abc import Iterable
 
 import torch
 
@@ -29,80 +28,9 @@ from FastAutoAugment.metrics import Accumulator
 from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
+from FastAutoAugment.group_assign import *
 
 top1_valid_by_cv = defaultdict(lambda: list)
-
-def gen_assign_group(version, num_group=5):
-    if version == 1:
-        return assign_group
-    elif version == 2:
-        return lambda data, label=None: assign_group2(data,label,num_group)
-    elif version == 3:
-        return lambda data, label=None: assign_group3(data,label,num_group)
-    elif version == 4:
-        return assign_group4
-
-def assign_group(data, label=None):
-    """
-    input: data(batch of images), label(optional, same length with data)
-    return: assigned group numbers for data (same length with data)
-    to be used before training B.O.
-    """
-    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-    # exp1: group by manualy classified classes
-    groups = {}
-    groups[0] = ['plane', 'ship']
-    groups[1] = ['car', 'truck']
-    groups[2] = ['horse', 'deer']
-    groups[3] = ['dog', 'cat']
-    groups[4] = ['frog', 'bird']
-    def _assign_group_id1(_label):
-        gr_id = None
-        for key in groups:
-            if classes[_label] in groups[key]:
-                gr_id = key
-                return gr_id
-        if gr_id is None:
-            raise ValueError(f"label {_label} is not given properly. classes[label] = {classes[_label]}")
-    if not isinstance(label, Iterable):
-        return _assign_group_id1(label)
-    return list(map(_assign_group_id1, label))
-
-def assign_group2(data, label=None, num_group=5):
-    """
-    input: data(batch of images), label(optional, same length with data)
-    return: randomly assigned group numbers for data (same length with data)
-    to be used before training B.O.
-    """
-    _size = len(data)
-    return np.random.randint(0, num_group, size=_size)
-
-def assign_group3(data, label=None, num_group=5):
-    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-    _classes = list(copy.deepcopy(classes))
-    np.random.shuffle(_classes)
-    groups = defaultdict(lambda: [])
-    num_cls_per_gr = len(_classes) // num_group + 1
-    for i in range(num_group):
-        for _ in range(num_cls_per_gr):
-            if len(_classes) == 0:
-                break
-            groups[i].append(_classes.pop())
-
-    def _assign_group_id1(_label):
-        gr_id = None
-        for key in groups:
-            if classes[_label] in groups[key]:
-                gr_id = key
-                return gr_id
-        if gr_id is None:
-            raise ValueError(f"label {_label} is not given properly. classes[label] = {classes[_label]}")
-    if not isinstance(label, Iterable):
-        return _assign_group_id1(label)
-    return list(map(_assign_group_id1, label))
-
-def assign_group4(data, label=None):
-    return list(map(lambda x: 0 if x<10 else 1, label))
 
 def step_w_log(self):
     original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
@@ -135,7 +63,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=0.5)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None):
     C.get()
     C.get().conf = config
@@ -191,10 +119,10 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+            losses_min = np.min(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            corrects_max = np.max(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
@@ -205,6 +133,59 @@ def eval_tta(config, augment, reporter):
         pass
 
     del model
+    metrics = metrics / 'cnt'
+    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
+    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    return metrics['correct']
+
+def eval_tta2(config, augment, reporter):
+    C.get()
+    C.get().conf = config
+    cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
+    gr_id = augment["gr_id"]
+    num_repeat = 5
+
+    # setup - provided augmentation rules
+    C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
+
+    # eval
+    model = get_model(C.get()['model'], num_class(C.get()['dataset']))
+    ckpt = torch.load(save_path)
+    if 'model' in ckpt:
+        model.load_state_dict(ckpt['model'])
+    else:
+        model.load_state_dict(ckpt)
+    model.eval()
+
+    loaders = []
+    for i in range(num_repeat):
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
+        loaders.append(validloader)
+        del tl, tl2
+
+
+    start_t = time.time()
+    metrics = Accumulator()
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    for loader in loaders:
+        for data, label in range(loader):
+            data = data.cuda()
+            label = label.cuda()
+
+            pred = model(data)
+            loss = loss_fn(pred, label) # (N)
+
+            _, pred = pred.topk(1, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
+
+            metrics.add_dict({
+                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'correct': np.sum(correct),
+                'cnt': len(data)
+            })
+            del loss, correct, pred, data, label
+        del model
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
@@ -234,6 +215,7 @@ if __name__ == '__main__':
     parser.add_argument('--random', action='store_true')
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--version', type=int, default=1)
+    parser.add_argument('--repeat', type=int, default=1)
 
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
@@ -307,11 +289,11 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 3
+    num_process_per_gpu = 2
     final_policy_group = defaultdict(lambda : [])
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    for _ in range(2):  # run multiple times.
+    for _ in range(args.repeat):  # run multiple times.
         for gr_id in range(gr_num):
             for cv_id in range(cv_num):
                 final_policy_set = []
@@ -319,7 +301,7 @@ if __name__ == '__main__':
                 print(name)
                 register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr)
-                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*4)
+                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*8)
                 exp_config = {
                     name: {
                         'run': name,
@@ -363,7 +345,8 @@ if __name__ == '__main__':
     g0 = fa_reduced_cifar10()
     g1 = fa_reduced_svhn()
     bench_policy_group = {0: g0, 1:g1}
-    num_experiments = 4
+    bench_policy_group = C.get()["aug"]
+    num_experiments = 8
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
