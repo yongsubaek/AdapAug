@@ -64,7 +64,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=0.5)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_fold, save_path=None, skip_exist=False):
     C.get()
     C.get().conf = config
@@ -161,6 +161,8 @@ if __name__ == '__main__':
     parser.add_argument('--cv-num', type=int, default=1)
     parser.add_argument('--exp_name', type=str)
     parser.add_argument('--rpc', type=int, default=10)
+    parser.add_argument('--repeat', type=int, default=1)
+
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
     if args.decay > 0:
@@ -230,11 +232,11 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 3
+    num_process_per_gpu = 2
     final_policy_set = []
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    for _ in range(2):  # run multiple times.
+    for _ in range(args.repeat):  # run multiple times.
         for cv_fold in range(cv_num):
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
@@ -282,7 +284,7 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
 
-    num_experiments = 2
+    num_experiments = 8
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \

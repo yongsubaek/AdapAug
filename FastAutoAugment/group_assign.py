@@ -51,7 +51,7 @@ def assign_group2(data, label=None, num_group=5):
 def assign_group3(data, label=None, num_group=5):
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
     _classes = list(copy.deepcopy(classes))
-    np.random.shuffle(_classes)
+    # np.random.shuffle(_classes)
     groups = defaultdict(lambda: [])
     num_cls_per_gr = len(_classes) // num_group + 1
     for i in range(num_group):

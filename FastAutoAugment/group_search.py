@@ -168,7 +168,7 @@ def eval_tta2(config, augment, reporter):
     metrics = Accumulator()
     loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
     for loader in loaders:
-        for data, label in range(loader):
+        for data, label in loader:
             data = data.cuda()
             label = label.cuda()
 
@@ -185,7 +185,7 @@ def eval_tta2(config, augment, reporter):
                 'cnt': len(data)
             })
             del loss, correct, pred, data, label
-        del model
+    del model
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
@@ -299,7 +299,7 @@ if __name__ == '__main__':
                 final_policy_set = []
                 name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
                 print(name)
-                register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+                register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr)
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*8)
                 exp_config = {
@@ -345,7 +345,7 @@ if __name__ == '__main__':
     g0 = fa_reduced_cifar10()
     g1 = fa_reduced_svhn()
     bench_policy_group = {0: g0, 1:g1}
-    bench_policy_group = C.get()["aug"]
+    # bench_policy_group = C.get()["aug"]
     num_experiments = 8
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
