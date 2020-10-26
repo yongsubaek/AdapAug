@@ -192,7 +192,6 @@ def eval_tta2(config, augment, reporter):
     C.get()
     C.get().conf = config
     cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
-    gr_id = augment["gr_id"]
     num_repeat = 1
 
     # setup - provided augmentation rules
@@ -395,11 +394,11 @@ if __name__ == '__main__':
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    g0 = fa_reduced_cifar10()
-    g1 = fa_reduced_svhn()
-    bench_policy_group = {0: g1, 1:g0}
-    # bench_policy_group = C.get()["aug"]
-    num_experiments = 2*torch.cuda.device_count()
+    # g0 = fa_reduced_cifar10()
+    # g1 = fa_reduced_svhn()
+    # bench_policy_group = {0: g1, 1:g0}
+    bench_policy_group = C.get()["aug"]
+    num_experiments = torch.cuda.device_count()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \

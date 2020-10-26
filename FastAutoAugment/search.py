@@ -191,6 +191,58 @@ def eval_tta(config, augment, reporter):
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
+def eval_tta2(config, augment, reporter):
+    C.get()
+    C.get().conf = config
+    cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_fold'], augment['save_path']
+    num_repeat = 1
+
+    # setup - provided augmentation rules
+    C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
+
+    # eval
+    model = get_model(C.get()['model'], num_class(C.get()['dataset']))
+    ckpt = torch.load(save_path)
+    if 'model' in ckpt:
+        model.load_state_dict(ckpt['model'])
+    else:
+        model.load_state_dict(ckpt)
+    model.eval()
+
+    loaders = []
+    for i in range(num_repeat):
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id)
+        loaders.append(validloader)
+        del tl, tl2
+
+
+    start_t = time.time()
+    metrics = Accumulator()
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    for loader in loaders:
+        for data, label in loader:
+            data = data.cuda()
+            label = label.cuda()
+
+            pred = model(data)
+            loss = loss_fn(pred, label) # (N)
+
+            _, pred = pred.topk(1, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
+
+            metrics.add_dict({
+                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'correct': np.sum(correct),
+                'cnt': len(data)
+            })
+            del loss, correct, pred, data, label
+    del model
+    metrics = metrics / 'cnt'
+    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
+    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    return metrics['correct']
+
 
 if __name__ == '__main__':
     import json
@@ -265,8 +317,11 @@ if __name__ == '__main__':
 
     logger.info('getting results...')
     pretrain_results = ray.get(reqs)
+    aff_bases = []
     for r_model, r_cv, r_dict in pretrain_results:
         logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+        # for Affinity calculation
+        aff_bases.append(r_dict['top1_valid'])
     logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
 
     if args.until == 1:
@@ -291,7 +346,7 @@ if __name__ == '__main__':
         for cv_fold in range(cv_num):
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
-            register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+            register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
             algo = HyperOptSearch(space, metric=reward_attr)
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
@@ -315,9 +370,9 @@ if __name__ == '__main__':
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
             except:
                 print(f"len: {len(results)}")
-                print(f"first elem: {result[0]}")
-                print(f"first elem type: {type(result[0])}")
-                raise ValueError(str(result.keys()))
+                print(f"first elem: {results[0]}")
+                print(f"first elem type: {type(results[0])}")
+                raise ValueError(str(results.keys()))
             # calculate computation usage
             for result in results:
                 total_computation += result.last_result['elapsed_time']
@@ -335,10 +390,11 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
 
-    num_experiments = 2*torch.cuda.device_count()
+    num_experiments = torch.cuda.device_count()
+    bench_policy_set = C.get()['aug']
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_set, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
         [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_set, 0.0, 0, save_path=augment_path[_]) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
@@ -374,11 +430,10 @@ if __name__ == '__main__':
     # Affinity Calculation
     augment = {
         'dataroot': args.dataroot, 'load_paths': paths,
-        'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-        "gr_assign": gr_assign
+        'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num
     }
-    bench_affs = get_affinity(bench_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
-    aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
+    bench_affs = get_affinity(bench_policy_set, aff_bases, copy.deepcopy(copied_c), augment)
+    aug_affs = get_affinity(final_policy_set, aff_bases, copy.deepcopy(copied_c), augment)
     # Diversity calculation
     bench_divs = []
     aug_divs = []
