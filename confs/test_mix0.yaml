@@ -1,11 +1,11 @@
 model:
   type: wresnet40_2
-dataset: cifar10
-test_dataset: cifar10
+dataset: cifar10_svhn
+test_dataset: cifar10_svhn
 aug: default
-cutout: 0
+cutout: 16
 batch: 128
-epoch: 200
+epoch: 1
 lr: 0.1
 lr_schedule:
   type: 'cosine'

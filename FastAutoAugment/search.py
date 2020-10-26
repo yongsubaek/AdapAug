@@ -32,6 +32,57 @@ from theconf import Config as C, ConfigArgumentParser
 
 top1_valid_by_cv = defaultdict(lambda: list)
 
+def get_affinity(aug, aff_bases, config, augment):
+    C.get()
+    C.get().conf = config
+    # setup - provided augmentation rules
+    C.get()['aug'] = aug
+    load_paths = augment['load_paths']
+    cv_num = augment["cv_num"]
+
+    aug_loaders = []
+    for cv_id in range(cv_num):
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id)
+        aug_loaders.append(validloader)
+        del tl, tl2
+
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    aug_accs = []
+    for cv_id, loader in enumerate(aug_loaders):
+        # eval
+        model = get_model(C.get()['model'], num_class(C.get()['dataset']))
+        ckpt = torch.load(load_paths[cv_id])
+        if 'model' in ckpt:
+            model.load_state_dict(ckpt['model'])
+        else:
+            model.load_state_dict(ckpt)
+        model.eval()
+
+        metrics = Accumulator()
+        for data, label in loader:
+            data = data.cuda()
+            label = label.cuda()
+
+            pred = model(data)
+            loss = loss_fn(pred, label) # (N)
+
+            _, pred = pred.topk(1, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
+
+            metrics.add_dict({
+                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'correct': np.sum(correct),
+                'cnt': len(data)
+            })
+            del loss, correct, pred, data, label
+        aug_accs.append(metrics['correct'] / metrics['cnt'])
+    del model
+    affs = []
+    for aug_valid, clean_valid in zip(aug_accs, aff_bases):
+        affs.append(aug_valid - clean_valid)
+    return affs
+
 
 def step_w_log(self):
     original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
@@ -232,7 +283,7 @@ if __name__ == '__main__':
             space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2
+    num_process_per_gpu = 2 if torch.cuda.device_count() == 8 else 3
     final_policy_set = []
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
@@ -242,7 +293,7 @@ if __name__ == '__main__':
             print(name)
             register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
             algo = HyperOptSearch(space, metric=reward_attr)
-            algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*4)
+            algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
             exp_config = {
                 name: {
@@ -284,7 +335,7 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
 
-    num_experiments = 8
+    num_experiments = 2*torch.cuda.device_count()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, C.get()['aug'], 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
@@ -320,15 +371,33 @@ if __name__ == '__main__':
 
     logger.info('getting results...')
     final_results = ray.get(reqs)
-
+    # Affinity Calculation
+    augment = {
+        'dataroot': args.dataroot, 'load_paths': paths,
+        'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
+        "gr_assign": gr_assign
+    }
+    bench_affs = get_affinity(bench_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
+    aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
+    # Diversity calculation
+    bench_divs = []
+    aug_divs = []
     for train_mode in ['default', 'augment']:
         avg = 0.
         for _ in range(num_experiments):
             r_model, r_cv, r_dict = final_results.pop(0)
             logger.info('[%s] top1_train=%.4f top1_test=%.4f' % (train_mode, r_dict['top1_train'], r_dict['top1_test']))
             avg += r_dict['top1_test']
+            if train_mode == 'default':
+                bench_divs.append(r_dict['loss_train'])
+            else:
+                aug_divs.append(r_dict['loss_train'])
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
     logger.info('processed in %.4f secs' % w.pause('train_aug'))
-
+    logger.info('processed in %.4f secs' % w.pause('train_aug'))
+    logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
+    logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
+    logger.info("bench_div_avg={:.2f}".format(np.mean(bench_divs)))
+    logger.info("aug_div_avg={:.2f}".format(np.mean(aug_divs)))
     logger.info(w)

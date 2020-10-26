@@ -202,7 +202,7 @@ def get_custom_dataloaders(dataset, batch, dataroot, split=0.08, multinode=False
     )
     return train_sampler, trainloader, validloader, testloader
 
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=0):
+def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None):
     if 'cifar' in dataset or 'svhn' in dataset:
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -372,7 +372,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
 
     train_sampler = None
     if split > 0.0:
-        if gr_assign is not None:
+        if gr_assign is not None and gr_id is not None:
             idx2gr = gr_assign(total_trainset.data, label=total_trainset.targets)
             ps = PredefinedSplit(idx2gr)
             ps = ps.split()
