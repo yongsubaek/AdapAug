@@ -265,14 +265,16 @@ if __name__ == '__main__':
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--version', type=int, default=1)
     parser.add_argument('--repeat', type=int, default=1)
+    parser.add_argument('--iter', type=int, default=5)
 
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
         C.get()['optimizer']['decay'] = args.decay
-
-    add_filehandler(logger, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
+    os.makedirs(base_path, exist_ok=True)
+    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
@@ -281,7 +283,6 @@ if __name__ == '__main__':
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
     gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
-    # assert gr_num == 5, "version1 requires gr-num == 5."
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     copied_c = copy.deepcopy(C.get().conf)
@@ -359,7 +360,7 @@ if __name__ == '__main__':
                         'run': name,
                         'num_samples': 4 if args.smoke_test else args.num_search,
                         'resources_per_trial': {'gpu': 1./num_process_per_gpu},
-                        'stop': {'training_iteration': args.num_policy},
+                        'stop': {'training_iteration': args.iter},
                         'config': {
                             'dataroot': args.dataroot, 'save_path': paths[cv_id],
                             'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
@@ -394,14 +395,15 @@ if __name__ == '__main__':
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    # g0 = fa_reduced_cifar10()
+    g0 = fa_reduced_cifar10()
     # g1 = fa_reduced_svhn()
-    # bench_policy_group = {0: g1, 1:g0}
+    # bench_policy_group = "autoaug_cifar10"
+    # final_policy_group = {0: g0, 1:g0}
     bench_policy_group = C.get()["aug"]
     num_experiments = torch.cuda.device_count()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_assign=gr_assign) for _ in range(num_experiments)] + \
      [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gr_assign) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))

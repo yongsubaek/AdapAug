@@ -20,7 +20,7 @@ from tqdm import tqdm
 from pathlib import Path
 lib_dir = (Path("__file__").parent).resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
-from FastAutoAugment.archive import remove_deplicates, policy_decoder
+from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from FastAutoAugment.augmentations import augment_list
 from FastAutoAugment.common import get_logger, add_filehandler
 from FastAutoAugment.data import get_dataloaders
@@ -265,14 +265,16 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str)
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=1)
+    parser.add_argument('--iter', type=int, default=5)
 
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
         C.get()['optimizer']['decay'] = args.decay
-
-    add_filehandler(logger, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
+    os.makedirs(base_path, exist_ok=True)
+    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
@@ -355,7 +357,7 @@ if __name__ == '__main__':
                     'run': name,
                     'num_samples': 4 if args.smoke_test else args.num_search,
                     'resources_per_trial': {'gpu': 1. / num_process_per_gpu},
-                    'stop': {'training_iteration': args.num_policy},
+                    'stop': {'training_iteration': args.iter},
                     'config': {
                         'dataroot': args.dataroot, 'save_path': paths[cv_fold],
                         'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
@@ -391,7 +393,11 @@ if __name__ == '__main__':
     w.start(tag='train_aug')
 
     num_experiments = torch.cuda.device_count()
-    bench_policy_set = C.get()['aug']
+    # g0 = fa_reduced_cifar10()
+    # g1 = fa_reduced_svhn()
+    # bench_policy_group = {0: g0, 1:g0}
+    bench_policy_set = "autoaug_cifar10"#C.get()['aug']
+    # final_policy_set = fa_reduced_svhn()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_set, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \

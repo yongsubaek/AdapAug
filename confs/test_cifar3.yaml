@@ -1,8 +1,8 @@
 model:
-  type: wresnet28_10
-dataset: cifar100
-test_dataset: cifar100
-aug: default
+  type: wresnet40_2
+dataset: cifar10
+test_dataset: cifar10
+aug: fa_reduced_svhn
 cutout: 16
 batch: 128
 epoch: 200
