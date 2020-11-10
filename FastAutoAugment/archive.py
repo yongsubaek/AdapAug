@@ -300,7 +300,7 @@ def policy_decoder(augment, num_policy, num_op):
         ops = []
         for j in range(num_op):
             op_idx = augment['policy_%d_%d' % (i, j)]
-            op_prob = augment['prob_%d_%d' % (i, j)]
+            op_prob = 0.5#augment['prob_%d_%d' % (i, j)]
             op_level = augment['level_%d_%d' % (i, j)]
             ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
         policies.append(ops)

@@ -165,13 +165,13 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     return metrics
 
 
-def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None):
+def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None, gr_ids=None):
     total_batch = C.get()["batch"]
     dataset = C.get()["dataset"]
     if dataloaders:
         trainsampler, trainloader, validloader, testloader_ = dataloaders
     else:
-        trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["test_dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign)
+        trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["test_dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
         # if gr_assign:
         #     trainloader = GroupAugloader(trainloader, gr_assign, C.get()["aug"])
     if local_rank >= 0:

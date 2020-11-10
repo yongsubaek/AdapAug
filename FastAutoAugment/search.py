@@ -28,9 +28,22 @@ from FastAutoAugment.metrics import Accumulator
 from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
-
+import csv, random
 
 top1_valid_by_cv = defaultdict(lambda: list)
+
+def gen_rand_policy(num_policy, num_op):
+    op_list = augment_list(False)
+    policies = []
+    for i in range(num_policy):
+        ops = []
+        for j in range(num_op):
+            op_idx = random.randint(0, len(op_list)-1)
+            op_prob = random.random()
+            op_level = random.random()
+            ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
+        policies.append(ops)
+    return policies
 
 def get_affinity(aug, aff_bases, config, augment):
     C.get()
@@ -83,6 +96,14 @@ def get_affinity(aug, aff_bases, config, augment):
         affs.append(aug_valid - clean_valid)
     return affs
 
+def save_res(iter, acc, best, term):
+    base_path = f"result/{C.get()['exp_name']}"
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
+    os.makedirs(base_path, exist_ok=True)
+    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
+    wr = csv.writer(f)
+    wr.writerow([iter, acc, best, term])
+    f.close()
 
 def step_w_log(self):
     original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
@@ -92,14 +113,16 @@ def step_w_log(self):
     for status in [Trial.RUNNING, Trial.TERMINATED, Trial.PENDING, Trial.PAUSED, Trial.ERROR]:
         cnt = len(list(filter(lambda x: x.status == status, self._trials)))
         cnts[status] = cnt
-    best_top1_acc = 0.
+    best_top1_acc = 1.
+    last_acc = 0.
     for trial in filter(lambda x: x.status == Trial.TERMINATED, self._trials):
         if not trial.last_result:
             continue
-        best_top1_acc = max(best_top1_acc, trial.last_result['top1_valid'])
+        best_top1_acc = min(best_top1_acc, trial.last_result['top1_valid'])
+        last_acc = trial.last_result['top1_valid']
+    save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
     print('iter', self._iteration, 'top1_acc=%.3f' % best_top1_acc, cnts, end='\r')
     return original(self)
-
 
 patch = gorilla.Patch(ray.tune.trial_runner.TrialRunner, 'step', step_w_log, settings=gorilla.Settings(allow_hit=True))
 gorilla.apply(patch)
@@ -266,6 +289,7 @@ if __name__ == '__main__':
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--iter', type=int, default=5)
+    parser.add_argument('--childaug', type=str, default="clean")
 
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
@@ -288,10 +312,10 @@ if __name__ == '__main__':
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
-    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_fold%d' % (args.cv_ratio, i)) for i in range(cv_num)]
+    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, "clean_data", args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], skip_exist=True)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
@@ -349,7 +373,7 @@ if __name__ == '__main__':
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
             register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
-            algo = HyperOptSearch(space, metric=reward_attr)
+            algo = HyperOptSearch(space, metric=reward_attr, mode="min")
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
             exp_config = {
@@ -382,9 +406,10 @@ if __name__ == '__main__':
             for result in results[:num_result_per_cv]:
                 final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                 logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
-
                 final_policy = remove_deplicates(final_policy)
                 final_policy_set.extend(final_policy)
+            # for i in range(args.rpc):
+            #     final_policy = gen_rand_policy(args.num_policy, args.num_op)
 
     logger.info(json.dumps(final_policy_set))
     logger.info('final_policy=%d' % len(final_policy_set))
@@ -396,7 +421,7 @@ if __name__ == '__main__':
     # g0 = fa_reduced_cifar10()
     # g1 = fa_reduced_svhn()
     # bench_policy_group = {0: g0, 1:g0}
-    bench_policy_set = "autoaug_cifar10"#C.get()['aug']
+    bench_policy_set = C.get()['aug']
     # final_policy_set = fa_reduced_svhn()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
