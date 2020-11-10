@@ -478,6 +478,14 @@ if __name__ == '__main__':
                 aug_divs.append(r_dict['loss_train'])
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
+    torch.save({
+        "bench_policy": bench_policy_group,
+        "final_policy": final_policy_group,
+        "aug_affs": aug_affs,
+        "aug_divs": aug_divs,
+        "bench_affs": bench_affs,
+        "bench_divs": bench_divs
+    }, base_path+"/summary.pt")
 
     logger.info('processed in %.4f secs' % w.pause('train_aug'))
     logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))

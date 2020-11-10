@@ -2,6 +2,7 @@ data/
 models/
 binning/
 results/
+result/
 tmp/
 tmp*
 # Byte-compiled / optimized / DLL files

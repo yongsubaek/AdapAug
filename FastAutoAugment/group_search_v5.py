@@ -422,14 +422,11 @@ if __name__ == '__main__':
                 aug_divs.append(r_dict['loss_train'])
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
-    base_path = f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
     torch.save({
         "gr_results": gr_results,
         "gr_dist_collector": gr_dist_collector,
-        "bench_policy_group": bench_policy_group,
-        "final_policy_group": final_policy_group,
+        "bench_policy": bench_policy_group,
+        "final_policy": final_policy_group,
         "aug_affs": aug_affs,
         "aug_divs": aug_divs,
         "bench_affs": bench_affs,

@@ -97,7 +97,7 @@ def get_affinity(aug, aff_bases, config, augment):
     return affs
 
 def save_res(iter, acc, best, term):
-    base_path = f"result/{C.get()['exp_name']}"
+    base_path = f"models/{C.get()['exp_name']}"
     base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
     os.makedirs(base_path, exist_ok=True)
     f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
@@ -114,13 +114,13 @@ def step_w_log(self):
         cnt = len(list(filter(lambda x: x.status == status, self._trials)))
         cnts[status] = cnt
     best_top1_acc = 1.
-    last_acc = 0.
+    # last_acc = 0.
     for trial in filter(lambda x: x.status == Trial.TERMINATED, self._trials):
         if not trial.last_result:
             continue
         best_top1_acc = min(best_top1_acc, trial.last_result['top1_valid'])
-        last_acc = trial.last_result['top1_valid']
-    save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
+        # last_acc = trial.last_result['top1_valid']
+    # save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
     print('iter', self._iteration, 'top1_acc=%.3f' % best_top1_acc, cnts, end='\r')
     return original(self)
 
@@ -418,11 +418,7 @@ if __name__ == '__main__':
     w.start(tag='train_aug')
 
     num_experiments = torch.cuda.device_count()
-    # g0 = fa_reduced_cifar10()
-    # g1 = fa_reduced_svhn()
-    # bench_policy_group = {0: g0, 1:g0}
     bench_policy_set = C.get()['aug']
-    # final_policy_set = fa_reduced_svhn()
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_set, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
@@ -480,6 +476,15 @@ if __name__ == '__main__':
                 aug_divs.append(r_dict['loss_train'])
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
+    torch.save({
+        "bench_policy": bench_policy_set,
+        "final_policy": final_policy_set,
+        "aug_affs": aug_affs,
+        "aug_divs": aug_divs,
+        "bench_affs": bench_affs,
+        "bench_divs": bench_divs
+    }, base_path+"/summary.pt")
+
     logger.info('processed in %.4f secs' % w.pause('train_aug'))
     logger.info('processed in %.4f secs' % w.pause('train_aug'))
     logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
