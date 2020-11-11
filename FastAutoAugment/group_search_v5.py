@@ -78,7 +78,7 @@ def get_affinity(aug, aff_bases, config, augment):
 
     aug_loaders = []
     for cv_id in range(cv_num):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_assign=augment["gr_assign"], gr_ids=augment["gr_ids"])
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_ids=augment["gr_ids"])
         aug_loaders.append(validloader)
         del tl, tl2
 
@@ -225,7 +225,6 @@ if __name__ == '__main__':
 
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
-    # gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     ori_aug = C.get()["aug"]
@@ -403,7 +402,7 @@ if __name__ == '__main__':
     augment = {
         'dataroot': args.dataroot, 'load_paths': paths,
         'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-        "gr_assign": gr_assign, "gr_ids": gr_ids
+        "gr_ids": gr_ids
     }
     bench_affs = get_affinity(bench_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
     aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)

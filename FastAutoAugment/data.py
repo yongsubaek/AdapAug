@@ -95,7 +95,6 @@ class GrAugMix(Dataset):
 
         return img, target
 
-
 class GrAugCIFAR10(torchvision.datasets.CIFAR10):
     def __init__(self, root, gr_assign, gr_policies, train=True, transform=None, target_transform=None,\
                  download=False, gr_ids=None):
@@ -136,6 +135,7 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
 
 def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assign=None):
     # augmented datasets without split
+    # only for calculation of gr_ids
     if 'cifar' in dataset or 'svhn' in dataset:
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -264,11 +264,9 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
         print('reduced_imagenet train=', len(total_trainset))
     elif dataset == "cifar10_svhn":
         if isinstance(C.get()['aug'], dict):
-            # last stage: benchmark test
             total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=C.get()['aug'], root=dataroot, train=True, download=False, transform=transform_train)
         else:
-            # eval_tta & childnet training
-            total_trainset = GrAugMix(dataset.split("_"), root=dataroot, train=True, download=False, transform=transform_train)
+            total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, root=dataroot, train=True, download=False, transform=transform_train)
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
@@ -656,7 +654,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=C.get()['aug'], root=dataroot, train=True, download=False, transform=transform_train, gr_ids=gr_ids)
         else:
             # eval_tta & childnet training
-            total_trainset = GrAugMix(dataset.split("_"), root=dataroot, train=True, download=False, transform=transform_train)
+            total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, root=dataroot, train=True, download=False, transform=transform_train)
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
@@ -670,8 +668,8 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         # filter by group
         if gr_ids is not None:
             total_trainset.gr_ids = gr_ids
-        if total_trainset.gr_ids is None:
-            # eval_tta
+        if total_trainset.gr_ids is None and gr_assign is not None:
+            # eval_tta3
             temp_trainset = copy.deepcopy(total_trainset)
             temp_trainset.transform = transform_test # just normalize
             temp_loader = torch.utils.data.DataLoader(

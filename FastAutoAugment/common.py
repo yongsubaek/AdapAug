@@ -1,4 +1,4 @@
-import copy, os
+import copy
 import logging
 import warnings
 from ray import tune
@@ -7,22 +7,6 @@ from theconf import Config as C
 formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
 warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
 warnings.filterwarnings("ignore", "DeprecationWarning: 'saved_variables' is deprecated", UserWarning)
-
-class CustomLogger(tune.logger.Logger):
-    def __init__(self):
-        base_path = f"models/{C.get()['exp_name']}"
-        base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-        self._file = open(base_path + "/log.csv", "w")
-        self._first = True
-    def on_result(self, result):
-        if self._first:
-            self._file.write(",".join(result.keys()) + "\n")
-            self._first = False
-        txt = ",".join([v for k,v in result.items()]) + "\n"
-        self._file.write(txt)
-
-    def close(self):
-        self._file.close()
 
 def get_logger(name, level=logging.DEBUG):
     logger = logging.getLogger(name)

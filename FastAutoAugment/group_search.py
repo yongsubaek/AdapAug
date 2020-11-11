@@ -22,7 +22,7 @@ lib_dir = (Path("__file__").parent).resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from FastAutoAugment.augmentations import augment_list
-from FastAutoAugment.common import get_logger, add_filehandler, CustomLogger
+from FastAutoAugment.common import get_logger, add_filehandler
 from FastAutoAugment.data import get_dataloaders
 from FastAutoAugment.metrics import Accumulator, accuracy
 from FastAutoAugment.networks import get_model, num_class
@@ -33,13 +33,10 @@ import csv
 
 top1_valid_by_cv = defaultdict(lambda: list)
 
-def save_res(iter, acc, best, term):
-    base_path = f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
-    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
+def save_res(fname, *args):
+    f = open(os.path.join(base_path, fname+"_bo_result.csv"), "a", newline="")
     wr = csv.writer(f)
-    wr.writerow([iter, acc, best, term])
+    wr.writerow([*args])
     f.close()
 
 def step_w_log(self):
@@ -360,18 +357,17 @@ if __name__ == '__main__':
     num_process_per_gpu = 2 if torch.cuda.device_count()==8 else 3
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    # gr_spliter = GrSpliter()
-    # gr_results = []
+    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     final_policy_group = defaultdict(lambda : [])
     for _ in range(args.repeat):  # run multiple times.
         for gr_id in range(gr_num):
-            # gr_result = train_spliter(gr_spliter)
-            # gr_results.append(gr_result)
-            # gr_assign = gr_spliter.gr_assign
             for cv_id in range(cv_num):
                 final_policy_set = []
                 name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
                 print(name)
+                bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                wr = csv.writer(bo_log_file)
+                wr.writerow(result_to_save)
                 register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
@@ -380,7 +376,7 @@ if __name__ == '__main__':
                         'run': name,
                         'num_samples': 4 if args.smoke_test else args.num_search,
                         'resources_per_trial': {'gpu': 1./num_process_per_gpu},
-                        # 'stop': {'training_iteration': args.iter},
+                        'stop': {'training_iteration': args.iter},
                         'config': {
                             'dataroot': args.dataroot, 'save_path': paths[cv_id],
                             'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
@@ -389,10 +385,14 @@ if __name__ == '__main__':
                         },
                     }
                 }
-                results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                            log_to_file=base_path+"/log", loggers=[ray.tune.logger.DEFAULT_LOGGERS, ray.tune.logger.CSVLogger, CustomLogger])
+                results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
                 print()
                 results = [x for x in results if x.last_result]
+                results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                for res in results:
+                    print(res.last_result)
+                    wr.writerow([res.last_result[k] for k in result_to_save])
+                bo_log_file.close()
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
                 # calculate computation usage
                 for result in results:
