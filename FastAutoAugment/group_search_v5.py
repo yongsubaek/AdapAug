@@ -311,6 +311,9 @@ if __name__ == '__main__':
                 final_policy_set = []
                 name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
                 print(name)
+                bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                wr = csv.writer(bo_log_file)
+                wr.writerow(result_to_save)
                 register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
@@ -331,6 +334,11 @@ if __name__ == '__main__':
                 }
                 results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
                 print()
+                results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                for res in results:
+                    # print(res.last_result)
+                    wr.writerow([res.last_result[k] for k in result_to_save])
+                bo_log_file.close()
                 results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
                 # calculate computation usage

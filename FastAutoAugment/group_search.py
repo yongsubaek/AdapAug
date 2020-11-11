@@ -390,7 +390,7 @@ if __name__ == '__main__':
                 results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result['timestamp'])
                 for res in results:
-                    print(res.last_result)
+                    # print(res.last_result)
                     wr.writerow([res.last_result[k] for k in result_to_save])
                 bo_log_file.close()
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
