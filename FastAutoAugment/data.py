@@ -270,7 +270,9 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-    if not hasattr(total_trainset, "gr_ids") or total_trainset.gr_ids is None and gr_assign is not None:
+    if not hasattr(total_trainset, "gr_ids"):
+        total_trainset.gr_ids = None
+    if gr_assign is not None and total_trainset.gr_ids is None:
         # eval_tta
         temp_trainset = copy.deepcopy(total_trainset)
         temp_trainset.transform = transform_test # just normalize
@@ -650,10 +652,11 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-
+    if not hasattr(total_trainset, "gr_ids"):
+        total_trainset.gr_ids = None
     if gr_ids is not None:
         total_trainset.gr_ids = gr_ids
-    if not hasattr(total_trainset, "gr_ids") or (total_trainset.gr_ids is None and gr_assign is not None):
+    if gr_assign is not None and total_trainset.gr_ids is None:
         # eval_tta3
         temp_trainset = copy.deepcopy(total_trainset)
         temp_trainset.transform = transform_test # just normalize
