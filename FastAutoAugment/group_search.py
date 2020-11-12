@@ -14,7 +14,7 @@ from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune import register_trainable, run_experiments
+from ray.tune import register_trainable, run_experiments, run, Experiment
 from tqdm import tqdm
 
 from pathlib import Path
@@ -371,21 +371,23 @@ if __name__ == '__main__':
                 register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
-                exp_config = {
-                    name: {
-                        'run': name,
-                        'num_samples': 4 if args.smoke_test else args.num_search,
-                        'resources_per_trial': {'gpu': 1./num_process_per_gpu},
-                        'stop': {'training_iteration': args.iter},
+                experiment_spec = Experiment(
+                    name,
+                    run=name,
+                    num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                    resources_per_trial={'gpu': 1./num_process_per_gpu},
+                    stop={'training_iteration': args.iter},
                         'config': {
                             'dataroot': args.dataroot, 'save_path': paths[cv_id],
                             'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
                             'num_op': args.num_op, 'num_policy': args.num_policy,
                             "gr_assign": gr_assign, "gr_id": gr_id
-                        },
-                    }
-                }
-                results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                    },
+                    local_dir=os.path.join(base_path, "ray_results"),
+                    )
+                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                                global_checkpoint_period=np.inf)
+                results = analysis.trials
                 print()
                 results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result['timestamp'])
@@ -401,7 +403,6 @@ if __name__ == '__main__':
                 for result in results[:num_result_per_cv]:
                     final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                     logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
-
                     final_policy = remove_deplicates(final_policy)
                     final_policy_set.extend(final_policy)
                 final_policy_group[gr_id].extend(final_policy_set)

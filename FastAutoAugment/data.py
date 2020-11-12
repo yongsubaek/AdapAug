@@ -106,7 +106,7 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
         if gr_ids is not None:
             self.gr_ids = gr_ids
         else:
-            self.gr_ids = self.gr_assign(self.data, self.targets)
+            self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
 
     def __getitem__(self, index):
         """
@@ -123,9 +123,9 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
         img = Image.fromarray(img)
 
         if self.transform is not None:
-            gr_id = self.gr_ids[index]
-            # self.transform.transforms.insert(0, Augmentation(self.gr_policies[gr_id]))
-            img = Augmentation(self.gr_policies[gr_id])(img)
+            if self.gr_ids is not None and self.gr_policies is not None:
+                gr_id = self.gr_ids[index]
+                img = Augmentation(self.gr_policies[gr_id])(img)
             img = self.transform(img)
 
         if self.target_transform is not None:
@@ -271,7 +271,7 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-    if total_trainset.gr_ids is None and gr_assign is not None:
+    if not hasattr(total_trainset, "gr_ids") or total_trainset.gr_ids is None and gr_assign is not None:
         # eval_tta
         temp_trainset = copy.deepcopy(total_trainset)
         temp_trainset.transform = transform_test # just normalize
@@ -336,7 +336,6 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
     else:
         raise ValueError('dataset=%s' % dataset)
 
-    total_aug = augs = None
     if isinstance(C.get()['aug'], list):
         logger.debug('augmentation provided.')
         transform_train.transforms.insert(0, Augmentation(C.get()['aug']))
@@ -455,11 +454,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
-
-    if total_aug is not None and augs is not None:
-        total_trainset.set_preaug(augs, total_aug)
-        print('set_preaug-')
-
+    # filter by group
     ps = PredefinedSplit(gr_ids)
     ps = ps.split()
     for _ in range(gr_id + 1):
@@ -538,7 +533,6 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     else:
         raise ValueError('dataset=%s' % dataset)
 
-    total_aug = augs = None
     if isinstance(C.get()['aug'], list):
         logger.debug('augmentation provided.')
         transform_train.transforms.insert(0, Augmentation(C.get()['aug']))
@@ -659,16 +653,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-    if total_aug is not None and augs is not None:
-        total_trainset.set_preaug(augs, total_aug)
-        print('set_preaug-')
-
     train_sampler = None
     if gr_id is not None:
         # filter by group
         if gr_ids is not None:
             total_trainset.gr_ids = gr_ids
-        if total_trainset.gr_ids is None and gr_assign is not None:
+        if not hasattr(total_trainset, "gr_ids") or total_trainset.gr_ids is None and gr_assign is not None:
             # eval_tta3
             temp_trainset = copy.deepcopy(total_trainset)
             temp_trainset.transform = transform_test # just normalize

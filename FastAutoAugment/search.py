@@ -14,7 +14,7 @@ from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune import register_trainable, run_experiments
+from ray.tune import register_trainable, run_experiments, run, Experiment
 from tqdm import tqdm
 
 from pathlib import Path
@@ -31,6 +31,48 @@ from theconf import Config as C, ConfigArgumentParser
 import csv, random
 
 top1_valid_by_cv = defaultdict(lambda: list)
+
+def save_res(iter, acc, best, term):
+    base_path = f"models/{C.get()['exp_name']}"
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
+    os.makedirs(base_path, exist_ok=True)
+    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
+    wr = csv.writer(f)
+    wr.writerow([iter, acc, best, term])
+    f.close()
+
+def step_w_log(self):
+    original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
+
+    # log
+    cnts = OrderedDict()
+    for status in [Trial.RUNNING, Trial.TERMINATED, Trial.PENDING, Trial.PAUSED, Trial.ERROR]:
+        cnt = len(list(filter(lambda x: x.status == status, self._trials)))
+        cnts[status] = cnt
+    best_top1_acc = 1.
+    # last_acc = 0.
+    for trial in filter(lambda x: x.status == Trial.TERMINATED, self._trials):
+        if not trial.last_result:
+            continue
+        best_top1_acc = min(best_top1_acc, trial.last_result['top1_valid'])
+        # last_acc = trial.last_result['top1_valid']
+    # save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
+    print('iter', self._iteration, 'top1_acc=%.3f' % best_top1_acc, cnts, end='\r')
+    return original(self)
+
+patch = gorilla.Patch(ray.tune.trial_runner.TrialRunner, 'step', step_w_log, settings=gorilla.Settings(allow_hit=True))
+gorilla.apply(patch)
+
+
+logger = get_logger('Fast AutoAugment')
+
+
+def _get_path(dataset, model, tag, basemodel=True):
+    base_path = "models" if basemodel else f"models/{C.get()['exp_name']}"
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
+    os.makedirs(base_path, exist_ok=True)
+    return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
+
 
 def gen_rand_policy(num_policy, num_op):
     op_list = augment_list(False)
@@ -95,48 +137,6 @@ def get_affinity(aug, aff_bases, config, augment):
     for aug_valid, clean_valid in zip(aug_accs, aff_bases):
         affs.append(aug_valid - clean_valid)
     return affs
-
-def save_res(iter, acc, best, term):
-    base_path = f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
-    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
-    wr = csv.writer(f)
-    wr.writerow([iter, acc, best, term])
-    f.close()
-
-def step_w_log(self):
-    original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
-
-    # log
-    cnts = OrderedDict()
-    for status in [Trial.RUNNING, Trial.TERMINATED, Trial.PENDING, Trial.PAUSED, Trial.ERROR]:
-        cnt = len(list(filter(lambda x: x.status == status, self._trials)))
-        cnts[status] = cnt
-    best_top1_acc = 1.
-    # last_acc = 0.
-    for trial in filter(lambda x: x.status == Trial.TERMINATED, self._trials):
-        if not trial.last_result:
-            continue
-        best_top1_acc = min(best_top1_acc, trial.last_result['top1_valid'])
-        # last_acc = trial.last_result['top1_valid']
-    # save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
-    print('iter', self._iteration, 'top1_acc=%.3f' % best_top1_acc, cnts, end='\r')
-    return original(self)
-
-patch = gorilla.Patch(ray.tune.trial_runner.TrialRunner, 'step', step_w_log, settings=gorilla.Settings(allow_hit=True))
-gorilla.apply(patch)
-
-
-logger = get_logger('Fast AutoAugment')
-
-
-def _get_path(dataset, model, tag, basemodel=True):
-    base_path = "models" if basemodel else f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
-    return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
-
 
 @ray.remote(num_gpus=0.5)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_fold, save_path=None, skip_exist=False):
@@ -361,44 +361,49 @@ if __name__ == '__main__':
     for i in range(args.num_policy):
         for j in range(args.num_op):
             space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-            space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+            # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
     num_process_per_gpu = 2 if torch.cuda.device_count() == 8 else 3
     final_policy_set = []
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
+    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     for _ in range(args.repeat):  # run multiple times.
         for cv_fold in range(cv_num):
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
+            bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+            wr = csv.writer(bo_log_file)
+            wr.writerow(result_to_save)
             register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
             algo = HyperOptSearch(space, metric=reward_attr, mode="min")
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
-            exp_config = {
-                name: {
-                    'run': name,
-                    'num_samples': 4 if args.smoke_test else args.num_search,
-                    'resources_per_trial': {'gpu': 1. / num_process_per_gpu},
-                    'stop': {'training_iteration': args.iter},
+            experiment_spec = Experiment(
+                name,
+                run=name,
+                num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                resources_per_trial={'gpu': 1./num_process_per_gpu},
+                stop={'training_iteration': args.iter},
                     'config': {
                         'dataroot': args.dataroot, 'save_path': paths[cv_fold],
                         'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
                         'num_op': args.num_op, 'num_policy': args.num_policy
                     },
-                }
-            }
-            results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                local_dir=os.path.join(base_path, "ray_results"),
+                )
+            analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                            global_checkpoint_period=np.inf)
+            results = analysis.trials
             print()
             results = [x for x in results if x.last_result is not None]
-            try:
-                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-            except:
-                print(f"len: {len(results)}")
-                print(f"first elem: {results[0]}")
-                print(f"first elem type: {type(results[0])}")
-                raise ValueError(str(results.keys()))
+                results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                for res in results:
+                    # print(res.last_result)
+                    wr.writerow([res.last_result[k] for k in result_to_save])
+                bo_log_file.close()
+            results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
             # calculate computation usage
             for result in results:
                 total_computation += result.last_result['elapsed_time']
@@ -408,8 +413,6 @@ if __name__ == '__main__':
                 logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
                 final_policy = remove_deplicates(final_policy)
                 final_policy_set.extend(final_policy)
-            # for i in range(args.rpc):
-            #     final_policy = gen_rand_policy(args.num_policy, args.num_op)
 
     logger.info(json.dumps(final_policy_set))
     logger.info('final_policy=%d' % len(final_policy_set))

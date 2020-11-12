@@ -14,7 +14,7 @@ from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune import register_trainable, run_experiments
+from ray.tune import register_trainable, run_experiments, run, Experiment
 from tqdm import tqdm
 
 from pathlib import Path
@@ -154,6 +154,7 @@ def eval_tta3(config, augment, reporter):
         model.load_state_dict(ckpt['model'])
     else:
         model.load_state_dict(ckpt)
+    del ckpt
     model.eval()
 
     start_t = time.time()
@@ -298,6 +299,7 @@ if __name__ == '__main__':
     gr_spliter = GrSpliter(childnet, gr_num=args.gr_num)
     gr_results = []
     gr_dist_collector = defaultdict(list)
+    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     for r in range(args.repeat):  # run multiple times.
         final_policy_group = defaultdict(lambda : [])
         for cv_id in range(cv_num):
@@ -317,29 +319,31 @@ if __name__ == '__main__':
                 register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
-                exp_config = {
-                    name: {
-                        'run': name,
-                        'num_samples': args.num_search,# if r == args.repeat-1 else 25,
-                        'resources_per_trial': {'gpu': 1./num_process_per_gpu},
-                        # 'stop': {'training_iteration': args.iter},
-                        'config': {
-                            "dataroot": args.dataroot,
-                            'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
-                            'num_op': args.num_op, 'num_policy': args.num_policy,
-                            "cv_id": cv_id, "gr_id": gr_id,
-                            "gr_ids": gr_ids
-                        },
-                    }
-                }
-                results = run_experiments(exp_config, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                experiment_spec = Experiment(
+                    name,
+                    run=name,
+                    num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                    resources_per_trial={'gpu': 1./num_process_per_gpu},
+                    stop={'training_iteration': args.iter},
+                    config={
+                        "dataroot": args.dataroot,
+                        'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
+                        'num_op': args.num_op, 'num_policy': args.num_policy,
+                        "cv_id": cv_id, "gr_id": gr_id,
+                        "gr_ids": gr_ids
+                    },
+                    local_dir=os.path.join(base_path, "ray_results"),
+                    )
+                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                                global_checkpoint_period=np.inf)
+                results = analysis.trials
                 print()
+                results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result['timestamp'])
                 for res in results:
                     # print(res.last_result)
                     wr.writerow([res.last_result[k] for k in result_to_save])
                 bo_log_file.close()
-                results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
                 # calculate computation usage
                 for result in results:
@@ -361,6 +365,11 @@ if __name__ == '__main__':
             gr_result = gr_spliter.train(final_policy_group, config)
             gr_results.append(gr_result)
 
+    gr_dist_collector = dict(gr_dist_collector)
+    torch.save({
+                "gr_results": gr_results,
+                "gr_dist_collector": gr_dist_collector,
+                }, base_path+"/search_summary.pt")
     final_policy_group = dict(final_policy_group)
     logger.info(json.dumps(final_policy_group))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
@@ -430,8 +439,6 @@ if __name__ == '__main__':
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
     torch.save({
-        "gr_results": gr_results,
-        "gr_dist_collector": gr_dist_collector,
         "bench_policy": bench_policy_group,
         "final_policy": final_policy_group,
         "aug_affs": aug_affs,
