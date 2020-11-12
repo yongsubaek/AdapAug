@@ -353,17 +353,19 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
             transform_train.transforms.insert(0, Augmentation(autoaug_paper_cifar10()))
         elif C.get()['aug'] == 'autoaug_extend':
             transform_train.transforms.insert(0, Augmentation(autoaug_policy()))
-        elif C.get()['aug'] in ['default', "clean", "nonorm"]:
+        elif C.get()['aug'] in ['default', "clean", "nonorm", "nocut"]:
             pass
         else:
             raise ValueError('not found augmentations. %s' % C.get()['aug'])
 
-    if C.get()['cutout'] > 0:
+    if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
     if C.get()['aug'] == "clean":
         transform_train = transform_test
     elif C.get()['aug'] == "nonorm":
-        transform_train = None
+        transform_train = transforms.Compose([
+            transforms.ToTensor()
+        ])
 
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
@@ -555,12 +557,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             transform_train.transforms.insert(0, Augmentation(autoaug_paper_cifar10()))
         elif C.get()['aug'] == 'autoaug_extend':
             transform_train.transforms.insert(0, Augmentation(autoaug_policy()))
-        elif C.get()['aug'] in ['default', "clean", "nonorm"]:
+        elif C.get()['aug'] in ['default', "clean", "nonorm", "nocut"]:
             pass
         else:
             raise ValueError('not found augmentations. %s' % C.get()['aug'])
 
-    if C.get()['cutout'] > 0:
+    if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
     if C.get()['aug'] == "clean":
         transform_train = transform_test

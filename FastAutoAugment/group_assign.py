@@ -58,7 +58,7 @@ class GrSpliter(object):
             transforms.ToTensor(),
             transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
         ])
-        if C.get()['cutout'] > 0:
+        if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
             self.transform.transforms.append(CutoutDefault(C.get()['cutout']))
 
     def gr_assign(self, dataloader):
