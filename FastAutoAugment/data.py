@@ -66,7 +66,6 @@ class GrAugMix(Dataset):
         self.data = np.concatenate(total_datas, 0)
         self.targets = sum(total_targets, [])
         assert len(self.data) == len(self.targets), f"data len {len(self.data)}, target len {len(self.targets)}"
-        # self.dataset = ConcatDataset(total_datasets)
 
         self.gr_assign = gr_assign
         self.gr_policies = gr_policies
@@ -279,13 +278,6 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
             temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
             drop_last=False)
         total_trainset.gr_ids = gr_assign(temp_loader)
-
-    if target_lb >= 0:
-        train_idx = [i for i in train_idx if total_trainset.targets[i] == target_lb]
-        valid_idx = [i for i in valid_idx if total_trainset.targets[i] == target_lb]
-
-    if multinode:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(Subset(total_trainset, train_idx), num_replicas=dist.get_world_size(), rank=dist.get_rank())
     return total_trainset, testset
 
 def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_ids):
@@ -454,20 +446,25 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
-    # filter by group
-    ps = PredefinedSplit(gr_ids)
-    ps = ps.split()
-    for _ in range(gr_id + 1):
-        _, gr_split_idx = next(ps)
-    targets = [total_trainset.targets[idx] for idx in gr_split_idx]
-    total_trainset = Subset(total_trainset, gr_split_idx)
-    total_trainset.targets = targets
+
     if split > 0.0:
         # filter by split ratio
         sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         for _ in range(split_idx+1):
             train_idx, valid_idx = next(sss)
+
+    # filter by group
+    ps = PredefinedSplit(gr_ids)
+    ps = ps.split()
+    for _ in range(gr_id + 1):
+        _, gr_split_idx = next(ps)
+    # train_idx = [idx for idx in train_idx if idx in gr_split_idx]
+    valid_idx = [idx for idx in valid_idx if idx in gr_split_idx]
+
+    # targets = [total_trainset.targets[idx] for idx in gr_split_idx]
+    # total_trainset = Subset(total_trainset, gr_split_idx)
+    # total_trainset.targets = targets
 
     # train_sampler = SubsetRandomSampler(train_idx)
     valid_sampler = SubsetSampler(valid_idx)
@@ -653,27 +650,17 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-    train_sampler = None
-    if gr_id is not None:
-        # filter by group
-        if gr_ids is not None:
-            total_trainset.gr_ids = gr_ids
-        if not hasattr(total_trainset, "gr_ids") or total_trainset.gr_ids is None and gr_assign is not None:
-            # eval_tta3
-            temp_trainset = copy.deepcopy(total_trainset)
-            temp_trainset.transform = transform_test # just normalize
-            temp_loader = torch.utils.data.DataLoader(
-            temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
-            drop_last=False)
-            total_trainset.gr_ids = gr_assign(temp_loader)
-        idx2gr = total_trainset.gr_ids
-        ps = PredefinedSplit(idx2gr)
-        ps = ps.split()
-        for _ in range(gr_id + 1):
-            _, gr_split_idx = next(ps)
-            targets = [total_trainset.targets[idx] for idx in gr_split_idx]
-            total_trainset = Subset(total_trainset, gr_split_idx)
-            total_trainset.targets = targets
+
+    if gr_ids is not None:
+        total_trainset.gr_ids = gr_ids
+    if not hasattr(total_trainset, "gr_ids") or (total_trainset.gr_ids is None and gr_assign is not None):
+        # eval_tta3
+        temp_trainset = copy.deepcopy(total_trainset)
+        temp_trainset.transform = transform_test # just normalize
+        temp_loader = torch.utils.data.DataLoader(
+        temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
+        drop_last=False)
+        total_trainset.gr_ids = gr_assign(temp_loader)
 
     if split > 0.0:
         # filter by split ratio
@@ -681,6 +668,16 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         for _ in range(split_idx + 1):
             train_idx, valid_idx = next(sss)
+
+        if gr_id is not None:
+            # filter by group
+            idx2gr = total_trainset.gr_ids
+            ps = PredefinedSplit(idx2gr)
+            ps = ps.split()
+            for _ in range(gr_id + 1):
+                _, gr_split_idx = next(ps)
+            train_idx = [idx for idx in train_idx if idx in gr_split_idx]
+            valid_idx = [idx for idx in valid_idx if idx in gr_split_idx]
 
         if target_lb >= 0:
             train_idx = [i for i in train_idx if total_trainset.targets[i] == target_lb]
@@ -692,11 +689,24 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(Subset(total_trainset, train_idx), num_replicas=dist.get_world_size(), rank=dist.get_rank())
     else:
+        train_sampler = None
         valid_sampler = SubsetSampler([])
+
+        if gr_id is not None:
+            # filter by group
+            idx2gr = total_trainset.gr_ids
+            ps = PredefinedSplit(idx2gr)
+            ps = ps.split()
+            for _ in range(gr_id + 1):
+                _, gr_split_idx = next(ps)
+            targets = [total_trainset.targets[idx] for idx in gr_split_idx]
+            total_trainset = Subset(total_trainset, gr_split_idx)
+            total_trainset.targets = targets
 
         if multinode:
             train_sampler = torch.utils.data.distributed.DistributedSampler(total_trainset, num_replicas=dist.get_world_size(), rank=dist.get_rank())
             logger.info(f'----- dataset with DistributedSampler  {dist.get_rank()}/{dist.get_world_size()}')
+
 
     trainloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8, pin_memory=True,

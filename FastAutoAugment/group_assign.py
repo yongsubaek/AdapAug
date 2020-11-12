@@ -18,12 +18,6 @@ class ModelWrapper(nn.Module):
         feature_extracter_list = list(backbone.children())[:-1]
         num_features = feature_extracter_list[-1].num_features # last: bn
         backbone.feature_out = True
-        # backbone.linear = nn.Linear(num_features, gr_num)
-        # backbone = nn.Sequential(*feature_extracter_list)
-        # def hook(model, input, output):
-        #     self.out = input[0].detach()
-        # backbone.linear.register_forward_hook(hook)
-
         # freeze backbone
         for name, param in backbone.named_parameters():
             if param.requires_grad:
@@ -37,11 +31,10 @@ class ModelWrapper(nn.Module):
     def forward(self, data, label=None):
         data = data.cuda()
         if label is None:
-            label = torch.zeros(len(data), 1).cuda()
-        else:
-            label = label.cuda()
+            label = torch.zeros(len(data), 1)
         feature = self.backbone(data)
-        logits = nn.functional.softmax(self.linear(torch.cat([feature, label.reshape([-1,1])], 1)), dim=-1)
+        label = label.reshape([-1,1]).float().cuda()
+        logits = nn.functional.softmax(self.linear(torch.cat([feature, label], 1)), dim=-1)
         gr_id = logits.max(1)[1]
         m = Categorical(logits)
         entropy = m.entropy()
