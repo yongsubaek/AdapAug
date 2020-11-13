@@ -171,7 +171,7 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
     if dataloaders:
         trainsampler, trainloader, validloader, testloader_ = dataloaders
     else:
-        trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["test_dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
+        trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
         # if gr_assign:
         #     trainloader = GroupAugloader(trainloader, gr_assign, C.get()["aug"])
     if local_rank >= 0:
