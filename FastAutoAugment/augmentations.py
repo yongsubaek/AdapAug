@@ -9,6 +9,8 @@ from torchvision.transforms.transforms import Compose
 
 random_mirror = True
 
+def HorizontalFlip(img, v):
+    return
 
 def ShearX(img, v):  # [-0.3, 0.3]
     assert -0.3 <= v <= 0.3, "v=%f" % v

@@ -365,6 +365,10 @@ if __name__ == '__main__':
             gr_result = gr_spliter.train(final_policy_group, config)
             gr_results.append(gr_result)
 
+    gr_assign = gr_spliter.gr_assign
+    total_trainset, _ = get_pre_datasets(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+    gr_ids = total_trainset.gr_ids
+    gr_dist_collector["last"] = gr_ids
     gr_dist_collector = dict(gr_dist_collector)
     torch.save({
                 "gr_results": gr_results,
@@ -375,13 +379,10 @@ if __name__ == '__main__':
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    gr_assign = gr_spliter.gr_assign
-    total_trainset, _ = get_pre_datasets(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-    gr_ids = total_trainset.gr_ids
     bench_policy_group = ori_aug
     num_experiments = torch.cuda.device_count()
-    default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \
      [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
 
