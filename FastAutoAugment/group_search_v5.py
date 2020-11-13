@@ -128,7 +128,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=0.5)
+@ray.remote(num_gpus=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None, gr_ids=None):
     C.get()
     C.get().conf = config
@@ -285,7 +285,7 @@ if __name__ == '__main__':
             # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2 if torch.cuda.device_count()==8 else 3
+    num_process_per_gpu = 1 if torch.cuda.device_count()==8 else 2
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
     # load childnet for g
