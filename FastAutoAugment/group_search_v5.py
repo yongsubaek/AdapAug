@@ -285,7 +285,7 @@ if __name__ == '__main__':
             # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 1 if torch.cuda.device_count()==8 else 2
+    num_process_per_gpu = 1 #if torch.cuda.device_count()==8 else 2
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
     # load childnet for g
