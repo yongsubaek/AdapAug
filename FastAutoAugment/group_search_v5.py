@@ -223,7 +223,7 @@ if __name__ == '__main__':
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
-    ray.init(address=args.redis, num_gpus=torch.cuda.device_count()-1)
+    ray.init(address=args.redis, num_gpus=torch.cuda.device_count())
 
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
@@ -298,7 +298,7 @@ if __name__ == '__main__':
         childnet.load_state_dict(ckpt)
     # g definition
     gr_spliter = GrSpliter(childnet, gr_num=args.gr_num)
-    del childnet
+    del childnet, ckpt
     gr_results = []
     gr_dist_collector = defaultdict(list)
     # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
@@ -368,20 +368,20 @@ if __name__ == '__main__':
 
     gr_assign = gr_spliter.gr_assign
     gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-    del gr_spliter
     gr_dist_collector["last"] = gr_ids
     gr_dist_collector = dict(gr_dist_collector)
     torch.save({
                 "gr_results": gr_results,
                 "gr_dist_collector": gr_dist_collector,
                 }, base_path+"/search_summary.pt")
+    del gr_spliter, gr_results, gr_dist_collector
     final_policy_group = dict(final_policy_group)
     logger.info(json.dumps(final_policy_group))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
     bench_policy_group = ori_aug
-    num_experiments = (torch.cuda.device_count()-1) // 2
+    num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \
