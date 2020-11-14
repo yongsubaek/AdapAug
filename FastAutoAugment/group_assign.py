@@ -75,7 +75,7 @@ class GrSpliter(object):
         aug_imgs = []
         # applied_policies = []
         for gr_id, img in zip(gr_ids, data):
-            pil_img = transforms.ToPILImage()(img.cpu())
+            pil_img = transforms.ToPILImage()(UnNormalize()(img.cpu()))
             _aug = Augmentation(policy[int(gr_id)])
             aug_img = _aug(pil_img)
             aug_img = self.transform(aug_img)
@@ -103,7 +103,7 @@ class GrSpliter(object):
         baseline  = ExponentialMovingAverage(0.9)
         pol_losses = []
         ori_aug = C.get()["aug"]
-        C.get()["aug"] = "nonorm"
+        C.get()["aug"] = "clean"
         loaders = []
         for _ in range(rep):
             _, _, dataloader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['cv_ratio_test'], split_idx=cv_id, rand_val=True)
@@ -218,3 +218,20 @@ def assign_group4(data, label=None):
 
 def assign_group5(data, label=None):
     return [0 for _ in label]
+
+class UnNormalize(object):
+    def __init__(self, mean=_CIFAR_MEAN, std=_CIFAR_STD):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor

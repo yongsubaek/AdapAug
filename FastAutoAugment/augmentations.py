@@ -215,3 +215,17 @@ class Lighting(object):
             .sum(1).squeeze()
 
         return img.add(rgb.view(3, 1, 1).expand_as(img))
+
+class RandAugment:
+    def __init__(self, n, m):
+        self.n = n
+        self.m = m      # [0, 30]
+        self.augment_list = augment_list()
+
+    def __call__(self, img):
+        ops = random.choices(self.augment_list, k=self.n)
+        for op, minval, maxval in ops:
+            val = (float(self.m) / 30) * float(maxval - minval) + minval
+            img = op(img, val)
+
+        return img

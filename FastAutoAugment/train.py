@@ -172,8 +172,6 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
         trainsampler, trainloader, validloader, testloader_ = dataloaders
     else:
         trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
-        # if gr_assign:
-        #     trainloader = GroupAugloader(trainloader, gr_assign, C.get()["aug"])
     if local_rank >= 0:
         dist.init_process_group(backend='nccl', init_method='env://', world_size=int(os.environ['WORLD_SIZE']))
         device = torch.device('cuda', local_rank)

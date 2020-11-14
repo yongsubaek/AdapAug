@@ -177,7 +177,7 @@ def eval_tta3(config, augment, reporter):
             'cnt': len(data)
         })
         del loss, correct, pred, data, label
-    del model
+    del model, loader
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
@@ -299,7 +299,7 @@ if __name__ == '__main__':
     gr_spliter = GrSpliter(childnet, gr_num=args.gr_num)
     gr_results = []
     gr_dist_collector = defaultdict(list)
-    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+    # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     for r in range(args.repeat):  # run multiple times.
         final_policy_group = defaultdict(lambda : [])
         for cv_id in range(cv_num):
@@ -312,9 +312,9 @@ if __name__ == '__main__':
                 final_policy_set = []
                 name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
                 print(name)
-                bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-                wr = csv.writer(bo_log_file)
-                wr.writerow(result_to_save)
+                # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                # wr = csv.writer(bo_log_file)
+                # wr.writerow(result_to_save)
                 register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                 algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
@@ -339,9 +339,9 @@ if __name__ == '__main__':
                 print()
                 results = [x for x in results if x.last_result]
                 results = sorted(results, key=lambda x: x.last_result['timestamp'])
-                for res in results:
-                    # print(res.last_result)
-                    wr.writerow([res.last_result[k] for k in result_to_save])
+                # for res in results:
+                #     # print(res.last_result)
+                #     wr.writerow([res.last_result[k] for k in result_to_save])
                 bo_log_file.close()
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
                 # calculate computation usage
