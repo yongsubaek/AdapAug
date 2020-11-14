@@ -1,7 +1,6 @@
 model:
   type: wresnet28_10
 dataset: reduced_svhn
-test_dataset: svhn
 aug: fa_reduced_svhn
 cutout: 20
 batch: 128

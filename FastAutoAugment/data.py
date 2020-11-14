@@ -171,7 +171,7 @@ class GrAugData(Dataset):
         return img, target
 
 
-def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assign=None):
+def get_gr_ids(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assign=None):
     # augmented datasets without split
     # only for calculation of gr_ids
     if 'cifar' in dataset or 'svhn' in dataset:
@@ -226,7 +226,7 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
         transform_train = transforms.Compose([
             transforms.ToTensor()
         ])
-
+    train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
@@ -238,12 +238,12 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=46000, random_state=0)   # 4000 trainset
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
-        train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
+        # sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
+        # train_idx, valid_idx = next(sss)
+        # targets = [total_trainset.targets[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
     elif dataset == 'cifar100':
@@ -262,12 +262,12 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
             total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=73257-1000, random_state=0)  # 1000 trainset
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
-        train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # sss = StratifiedShuffleSplit(n_splits=1, train_size=1000, test_size=7325, random_state=0)
+        # sss = sss.split(list(range(len(total_trainset))), total_trainset.labels)
+        # train_idx, valid_idx = next(sss)
+        # targets = [total_trainset.labels[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=True, transform=transform_test)
     elif dataset == 'imagenet':
@@ -323,12 +323,13 @@ def get_pre_datasets(dataset, batch, dataroot, multinode=False, target_lb=-1, gr
     if gr_assign is not None and total_trainset.gr_ids is None:
         # eval_tta
         temp_trainset = copy.deepcopy(total_trainset)
-        temp_trainset.transform = transform_test # just normalize
+        # temp_trainset.transform = transform_test # just normalize
         temp_loader = torch.utils.data.DataLoader(
             temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
             drop_last=False)
         total_trainset.gr_ids = gr_assign(temp_loader)
-    return total_trainset, testset
+    # return total_trainset, testset
+    return total_trainset.gr_ids
 
 def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_ids):
     if 'cifar' in dataset or 'svhn' in dataset:
@@ -414,7 +415,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
         transform_train = transforms.Compose([
             transforms.ToTensor()
         ])
-
+    train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
@@ -426,12 +427,12 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=46000, random_state=0)   # 4000 trainset
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # targets = [total_trainset.targets[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
     elif dataset == 'cifar100':
@@ -450,12 +451,12 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
             total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=73257-1000, random_state=0)  # 1000 trainset
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=1000, test_size=7325, random_state=0)
+        sss = sss.split(list(range(len(total_trainset))), total_trainset.labels)
         train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # targets = [total_trainset.labels[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=True, transform=transform_test)
     elif dataset == 'imagenet':
@@ -508,7 +509,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
-    if split > 0.0:
+    if split > 0.0 and train_idx is None and valid_idx is None:
         # filter by split ratio
         sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
@@ -627,6 +628,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         transform_train = transforms.Compose([
             transforms.ToTensor()
         ])
+    train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
@@ -638,12 +640,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=46000, random_state=0)   # 4000 trainset
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # targets = [total_trainset.targets[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=True, transform=transform_test)
     elif dataset == 'cifar100':
@@ -662,12 +664,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], split='train', download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=True, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=73257-1000, random_state=0)  # 1000 trainset
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=1000, test_size=7325, random_state=0)
+        sss = sss.split(list(range(len(total_trainset))), total_trainset.labels)
         train_idx, valid_idx = next(sss)
-        targets = [total_trainset.targets[idx] for idx in train_idx]
-        total_trainset = Subset(total_trainset, train_idx)
-        total_trainset.targets = targets
+        # targets = [total_trainset.labels[idx] for idx in train_idx]
+        # total_trainset = Subset(total_trainset, train_idx)
+        # total_trainset.targets = targets
 
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=True, transform=transform_test)
     elif dataset == 'imagenet':
@@ -727,18 +729,19 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     if gr_assign is not None and total_trainset.gr_ids is None:
         # eval_tta3
         temp_trainset = copy.deepcopy(total_trainset)
-        temp_trainset.transform = transform_test # just normalize
+        # temp_trainset.transform = transform_test # just normalize
         temp_loader = torch.utils.data.DataLoader(
         temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
         drop_last=False)
         total_trainset.gr_ids = gr_assign(temp_loader)
 
     if split > 0.0:
-        # filter by split ratio
-        sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
-        sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
-        for _ in range(split_idx + 1):
-            train_idx, valid_idx = next(sss)
+        if train_idx is None or valid_idx is None:
+            # filter by split ratio
+            sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
+            sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
+            for _ in range(split_idx + 1):
+                train_idx, valid_idx = next(sss)
 
         if gr_id is not None:
             # filter by group

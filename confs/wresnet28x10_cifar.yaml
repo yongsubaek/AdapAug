@@ -1,7 +1,6 @@
 model:
   type: wresnet28_10
 dataset: cifar10
-test_dataset: cifar10
 aug: fa_reduced_cifar10
 cutout: 16
 batch: 128

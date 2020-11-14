@@ -23,7 +23,7 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from FastAutoAugment.augmentations import augment_list
 from FastAutoAugment.common import get_logger, add_filehandler
-from FastAutoAugment.data import get_dataloaders, get_pre_datasets, get_post_dataloader
+from FastAutoAugment.data import get_dataloaders, get_gr_ids, get_post_dataloader
 from FastAutoAugment.metrics import Accumulator, accuracy
 from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
@@ -304,8 +304,7 @@ if __name__ == '__main__':
         final_policy_group = defaultdict(lambda : [])
         for cv_id in range(cv_num):
             gr_assign = gr_spliter.gr_assign
-            total_trainset, _ = get_pre_datasets(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-            gr_ids = total_trainset.gr_ids
+            gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
             gr_dist_collector[cv_id].append(gr_ids)
             print()
             print(Counter(gr_ids))
@@ -366,8 +365,7 @@ if __name__ == '__main__':
             gr_results.append(gr_result)
 
     gr_assign = gr_spliter.gr_assign
-    total_trainset, _ = get_pre_datasets(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-    gr_ids = total_trainset.gr_ids
+    gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
     gr_dist_collector["last"] = gr_ids
     gr_dist_collector = dict(gr_dist_collector)
     torch.save({
@@ -380,9 +378,9 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
     bench_policy_group = ori_aug
-    num_experiments = torch.cuda.device_count()
-    default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    num_experiments = torch.cuda.device_count() // 2
+    default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \
      [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
 
