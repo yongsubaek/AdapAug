@@ -107,6 +107,7 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
         else:
             self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
 
+
     def __getitem__(self, index):
         """
         Args:
@@ -133,17 +134,21 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
         return img, target
 
 class GrAugData(Dataset):
-    def __init__(self, dataname, transform=None, gr_assign=None, gr_policies=None, gr_ids=None, **kargs):
+    def __init__(self, dataname, transform=None, gr_assign=None, gr_policies=None, gr_ids=None, target_transform=None, **kargs):
         dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
         self.data = dataset.data
         self.targets = dataset.targets if dataname != "SVHN" else dataset.labels
         self.transform = transform
+        self.target_transform = target_transform
         self.gr_assign = gr_assign
         self.gr_policies = gr_policies
         if gr_ids is not None:
             self.gr_ids = gr_ids
         else:
             self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
+
+    def __len__(self):
+        return len(self.data)
 
     def __getitem__(self, index):
         """

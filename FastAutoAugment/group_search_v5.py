@@ -128,7 +128,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None, gr_ids=None):
     C.get()
     C.get().conf = config
@@ -179,7 +179,7 @@ def eval_tta3(config, augment, reporter):
         del loss, correct, pred, data, label
     del model, loader
     metrics = metrics / 'cnt'
-    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
+    gpu_secs = (time.time() - start_t) * (torch.cuda.device_count()-1)
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
@@ -212,6 +212,7 @@ if __name__ == '__main__':
     parser.add_argument('--childaug', type=str, default="clean")
 
     args = parser.parse_args()
+    torch.backends.cudnn.benchmark = True
     C.get()['exp_name'] = args.exp_name
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
@@ -222,7 +223,7 @@ if __name__ == '__main__':
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
-    ray.init(address=args.redis)
+    ray.init(address=args.redis, num_gpus=torch.cuda.device_count()-1)
 
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
@@ -270,13 +271,13 @@ if __name__ == '__main__':
         logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
         # for Affinity calculation
         aff_bases.append(r_dict['top1_valid'])
+        del r_model, r_cv, r_dict
     logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
     if args.until == 1:
         sys.exit(0)
-
+    del latest_ckpt, pretrain_results, reqs
     logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search-g_train')
-
     ops = augment_list(False)
     space = {}
     for i in range(args.num_policy):
@@ -285,7 +286,7 @@ if __name__ == '__main__':
             # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 1 #if torch.cuda.device_count()==8 else 2
+    num_process_per_gpu = 1
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
     # load childnet for g
@@ -297,6 +298,7 @@ if __name__ == '__main__':
         childnet.load_state_dict(ckpt)
     # g definition
     gr_spliter = GrSpliter(childnet, gr_num=args.gr_num)
+    del childnet
     gr_results = []
     gr_dist_collector = defaultdict(list)
     # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
@@ -317,7 +319,7 @@ if __name__ == '__main__':
                 # wr.writerow(result_to_save)
                 register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
                 algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1))
                 experiment_spec = Experiment(
                     name,
                     run=name,
@@ -342,7 +344,7 @@ if __name__ == '__main__':
                 # for res in results:
                 #     # print(res.last_result)
                 #     wr.writerow([res.last_result[k] for k in result_to_save])
-                bo_log_file.close()
+                # bo_log_file.close()
                 results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
                 # calculate computation usage
                 for result in results:
@@ -366,6 +368,7 @@ if __name__ == '__main__':
 
     gr_assign = gr_spliter.gr_assign
     gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+    del gr_spliter
     gr_dist_collector["last"] = gr_ids
     gr_dist_collector = dict(gr_dist_collector)
     torch.save({
@@ -378,7 +381,7 @@ if __name__ == '__main__':
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
     bench_policy_group = ori_aug
-    num_experiments = torch.cuda.device_count() // 2
+    num_experiments = (torch.cuda.device_count()-1) // 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \

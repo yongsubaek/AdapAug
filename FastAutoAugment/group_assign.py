@@ -10,11 +10,11 @@ from FastAutoAugment.data import get_dataloaders, CutoutDefault, Augmentation
 from FastAutoAugment.networks import get_model, num_class
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-
+DEVICE = f"cuda:{torch.cuda.device_count()-1}"
 class ModelWrapper(nn.Module):
     def __init__(self, backbone, gr_num, direct_prob=False):
         super(ModelWrapper, self).__init__()
-        backbone = backbone.cuda()
+        backbone = backbone.cuda(DEVICE)
         feature_extracter_list = list(backbone.children())[:-1]
         num_features = feature_extracter_list[-1].num_features # last: bn
         backbone.feature_out = True
@@ -29,11 +29,11 @@ class ModelWrapper(nn.Module):
         # torch.nn.init.xavier_uniform_(self.linear.weight)
 
     def forward(self, data, label=None):
-        data = data.cuda()
+        data = data.cuda(DEVICE)
         if label is None:
             label = torch.zeros(len(data), 1)
         feature = self.backbone(data)
-        label = label.reshape([-1,1]).float().cuda()
+        label = label.reshape([-1,1]).float().cuda(DEVICE)
         logits = nn.functional.softmax(self.linear(torch.cat([feature, label], 1)), dim=-1)
         gr_id = logits.max(1)[1]
         m = Categorical(logits)
@@ -49,9 +49,9 @@ class ModelWrapper(nn.Module):
 class GrSpliter(object):
     def __init__(self, childnet, gr_num):
         self.childnet = childnet
-        self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num).cuda()
-        self.optimizer = optim.Adam(self.model.linear.parameters(), lr = 0.00035, betas=(0.,0.999), eps=0.001)
-        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda()
+        self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num).cuda(DEVICE)
+        self.optimizer = optim.Adam(self.model.linear.parameters(), lr = 5e-5, betas=(0.,0.999), eps=0.001)
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda(DEVICE)
         self.transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
@@ -66,7 +66,7 @@ class GrSpliter(object):
         self.model.eval()
         all_gr_ids = []
         for data, label in dataloader:
-            data, label = data.cuda(), label.cuda()
+            data, label = data.cuda(DEVICE), label.cuda(DEVICE)
             gr_ids = self.model(data, label)[0]
             all_gr_ids.append(gr_ids.cpu().detach())
         return torch.cat(all_gr_ids).numpy()
@@ -83,7 +83,7 @@ class GrSpliter(object):
             # applied_policy = _aug.policy # Todo
             # applied_policies.append(applied_policy)
         aug_imgs = torch.stack(aug_imgs)
-        return aug_imgs.cuda()#, applied_policies
+        return aug_imgs.cuda(DEVICE)#, applied_policies
 
     def train(self, policy, config):
         # gr: group별 optimal policy가 주어질 때 평균 reward가 가장 높도록 나누는 assigner
@@ -93,7 +93,7 @@ class GrSpliter(object):
         cv_id = config['cv_id']
         load_path = config["load_path"]
         rep = config["rep"]
-        childnet = get_model(C.get()['model'], num_class(C.get()['dataset']))
+        childnet = get_model(C.get()['model'], num_class(C.get()['dataset'])).cuda(DEVICE)
         ckpt = torch.load(load_path)
         if 'model' in ckpt:
             childnet.load_state_dict(ckpt['model'])
@@ -110,8 +110,8 @@ class GrSpliter(object):
             loaders.append(dataloader)
         for loader in loaders:
             for data, label in loader:
-                data = data.cuda()
-                label = label.cuda()
+                data = data.cuda(DEVICE)
+                label = label.cuda(DEVICE)
                 gr_ids, log_probs, entropys = self.model(data, label)
                 with torch.no_grad():
                     aug_data = self.augmentation(data, gr_ids, policy)
