@@ -7,7 +7,7 @@ pretrainedmodels
 tqdm
 tensorboardx
 sklearn
-ray
+ray==0.8.7
 matplotlib
 psutil
 requests

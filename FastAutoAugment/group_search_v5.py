@@ -232,6 +232,8 @@ if __name__ == '__main__':
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     ori_aug = C.get()["aug"]
+    if 'test_dataset' not in C.get().conf:
+        C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
 
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
@@ -326,12 +328,13 @@ if __name__ == '__main__':
                     # print(best_configs[gr_id])
                     algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                                         # points_to_evaluate=best_configs[gr_id])
-                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1 if torch.cuda.device_count()==8 else 0))
+                    algo = ConcurrencyLimiter(algo, max_concurrent=torch.cuda.device_count()-(1 if torch.cuda.device_count()==8 else 0))
                     experiment_spec = Experiment(
                         name,
                         run=name,
                         num_samples=args.num_search,# if r == args.repeat-1 else 25,
                         stop={'training_iteration': args.iter},
+                        resources_per_trial={'gpu': 1./num_process_per_gpu},
                         config={
                             "dataroot": args.dataroot,
                             'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
@@ -342,7 +345,7 @@ if __name__ == '__main__':
                         local_dir=os.path.join(base_path, "ray_results"),
                         )
                     analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                    resources_per_trial={'gpu': 1./num_process_per_gpu}, global_checkpoint_period=np.inf)
+                                    global_checkpoint_period=np.inf)
                     results = analysis.trials
                     print()
                     results = [x for x in results if x.last_result]
@@ -374,7 +377,7 @@ if __name__ == '__main__':
                 gr_results.append(gr_result)
 
         gr_assign = gr_spliter.gr_assign
-        gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+        gr_ids = get_gr_ids(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
         gr_dist_collector["last"] = gr_ids
         gr_dist_collector = dict(gr_dist_collector)
         final_policy_group = dict(final_policy_group)
@@ -390,6 +393,7 @@ if __name__ == '__main__':
         search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
         search_info = torch.load(search_load_path)
         final_policy_group = search_info["final_policy_group"]
+        gr_ids = search_info["gr_dist_collector"]["last"]
         logger.info(json.dumps(final_policy_group))
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
@@ -397,8 +401,8 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     bench_policy_group = ori_aug
     num_experiments = torch.cuda.device_count() // 2
-    default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \
      [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
 
