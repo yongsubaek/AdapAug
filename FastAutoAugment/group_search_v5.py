@@ -326,7 +326,7 @@ if __name__ == '__main__':
                     # print(best_configs[gr_id])
                     algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                                         # points_to_evaluate=best_configs[gr_id])
-                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1))
+                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1 if torch.cuda.device_count()==8 else 0))
                     experiment_spec = Experiment(
                         name,
                         run=name,
