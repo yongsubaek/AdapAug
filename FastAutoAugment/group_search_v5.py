@@ -32,7 +32,6 @@ from FastAutoAugment.group_assign import *
 import csv
 
 top1_valid_by_cv = defaultdict(lambda: list)
-NUM_GPU = torch.cuda.device_count()
 
 def save_res(iter, acc, best, term):
     base_path = f"models/{C.get()['exp_name']}"
@@ -180,7 +179,7 @@ def eval_tta3(config, augment, reporter):
         del loss, correct, pred, data, label
     del model, loader
     metrics = metrics / 'cnt'
-    gpu_secs = (time.time() - start_t) * (NUM_GPU-1)
+    gpu_secs = (time.time() - start_t) * (torch.cuda.device_count()-1)
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
@@ -225,7 +224,7 @@ if __name__ == '__main__':
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
-    ray.init(address=args.redis, num_gpus=NUM_GPU)
+    ray.init(address=args.redis)
 
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
@@ -304,6 +303,7 @@ if __name__ == '__main__':
         del childnet, ckpt
         gr_results = []
         gr_dist_collector = defaultdict(list)
+        best_configs = defaultdict(lambda: None)
         # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
         for r in range(args.repeat):  # run multiple times.
             final_policy_group = defaultdict(lambda : [])
@@ -314,6 +314,7 @@ if __name__ == '__main__':
                 print()
                 print(Counter(gr_ids))
                 for gr_id in range(gr_num):
+                    torch.cuda.empty_cache()
                     final_policy_set = []
                     name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
                     print(name)
@@ -321,8 +322,9 @@ if __name__ == '__main__':
                     # wr = csv.writer(bo_log_file)
                     # wr.writerow(result_to_save)
                     register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
-                    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(NUM_GPU-1))
+                    algo = HyperOptSearch(space, metric=reward_attr, mode="max",
+                                        points_to_evaluate=best_configs[gr_id])
+                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1))
                     experiment_spec = Experiment(
                         name,
                         run=name,
@@ -352,8 +354,9 @@ if __name__ == '__main__':
                     # calculate computation usage
                     for result in results:
                         total_computation += result.last_result['elapsed_time']
-
+                    best_configs[gr_id] = []
                     for result in results[:num_result_per_cv]:
+                        best_configs[gr_id].append(result.config)
                         final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                         logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
 
@@ -390,8 +393,9 @@ if __name__ == '__main__':
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
+    torch.cuda.empty_cache()
     bench_policy_group = ori_aug
-    num_experiments = NUM_GPU // 2
+    num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \

@@ -138,7 +138,7 @@ def get_affinity(aug, aff_bases, config, augment):
         affs.append(aug_valid - clean_valid)
     return affs
 
-@ray.remote(num_gpus=0.5)
+@ray.remote(num_gpus=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_fold, save_path=None, skip_exist=False):
     C.get()
     C.get().conf = config
@@ -364,18 +364,18 @@ if __name__ == '__main__':
             # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    num_process_per_gpu = 2 if torch.cuda.device_count() == 8 else 3
+    num_process_per_gpu = 1#2 if torch.cuda.device_count() == 8 else 3
     final_policy_set = []
     total_computation = 0
     reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+    # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     for _ in range(args.repeat):  # run multiple times.
         for cv_fold in range(cv_num):
             name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
             print(name)
-            bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-            wr = csv.writer(bo_log_file)
-            wr.writerow(result_to_save)
+            # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+            # wr = csv.writer(bo_log_file)
+            # wr.writerow(result_to_save)
             register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
             algo = HyperOptSearch(space, metric=reward_attr, mode="min")
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
@@ -386,7 +386,7 @@ if __name__ == '__main__':
                 num_samples=args.num_search,# if r == args.repeat-1 else 25,
                 resources_per_trial={'gpu': 1./num_process_per_gpu},
                 stop={'training_iteration': args.iter},
-                    'config': {
+                config={
                         'dataroot': args.dataroot, 'save_path': paths[cv_fold],
                         'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
                         'num_op': args.num_op, 'num_policy': args.num_policy
@@ -398,11 +398,10 @@ if __name__ == '__main__':
             results = analysis.trials
             print()
             results = [x for x in results if x.last_result is not None]
-                results = sorted(results, key=lambda x: x.last_result['timestamp'])
-                for res in results:
-                    # print(res.last_result)
-                    wr.writerow([res.last_result[k] for k in result_to_save])
-                bo_log_file.close()
+            # results = sorted(results, key=lambda x: x.last_result['timestamp'])
+            # for res in results:
+            #     wr.writerow([res.last_result[k] for k in result_to_save])
+            # bo_log_file.close()
             results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
             # calculate computation usage
             for result in results:
