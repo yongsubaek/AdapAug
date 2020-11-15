@@ -10,6 +10,7 @@ import numpy as np
 from hyperopt import hp
 import ray
 import gorilla
+from ray import tune
 from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
@@ -303,7 +304,7 @@ if __name__ == '__main__':
         del childnet, ckpt
         gr_results = []
         gr_dist_collector = defaultdict(list)
-        best_configs = defaultdict(lambda: None)
+        # best_configs = defaultdict(lambda: None)
         # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
         for r in range(args.repeat):  # run multiple times.
             final_policy_group = defaultdict(lambda : [])
@@ -322,14 +323,14 @@ if __name__ == '__main__':
                     # wr = csv.writer(bo_log_file)
                     # wr.writerow(result_to_save)
                     register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
-                    algo = HyperOptSearch(space, metric=reward_attr, mode="max",
-                                        points_to_evaluate=best_configs[gr_id])
+                    # print(best_configs[gr_id])
+                    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+                                        # points_to_evaluate=best_configs[gr_id])
                     algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1))
                     experiment_spec = Experiment(
                         name,
                         run=name,
                         num_samples=args.num_search,# if r == args.repeat-1 else 25,
-                        resources_per_trial={'gpu': 1./num_process_per_gpu},
                         stop={'training_iteration': args.iter},
                         config={
                             "dataroot": args.dataroot,
@@ -341,7 +342,7 @@ if __name__ == '__main__':
                         local_dir=os.path.join(base_path, "ray_results"),
                         )
                     analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                    global_checkpoint_period=np.inf)
+                                    resources_per_trial={'gpu': 1./num_process_per_gpu}, global_checkpoint_period=np.inf)
                     results = analysis.trials
                     print()
                     results = [x for x in results if x.last_result]
@@ -354,9 +355,9 @@ if __name__ == '__main__':
                     # calculate computation usage
                     for result in results:
                         total_computation += result.last_result['elapsed_time']
-                    best_configs[gr_id] = []
+                    # best_configs[gr_id] = []
                     for result in results[:num_result_per_cv]:
-                        best_configs[gr_id].append(result.config)
+                        # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
                         final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                         logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
 
