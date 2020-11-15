@@ -301,6 +301,7 @@ if __name__ == '__main__':
     del childnet, ckpt
     gr_results = []
     gr_dist_collector = defaultdict(list)
+    best_configs = defaultdict(lambda: None)
     # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
     for r in range(args.repeat):  # run multiple times.
         final_policy_group = defaultdict(lambda : [])
@@ -318,8 +319,9 @@ if __name__ == '__main__':
                 # wr = csv.writer(bo_log_file)
                 # wr.writerow(result_to_save)
                 register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
-                algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()-1))
+                algo = HyperOptSearch(space, metric=reward_attr, mode="max",
+                                        points_to_evaluate=best_configs[gr_id])
+                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*(torch.cuda.device_count()))
                 experiment_spec = Experiment(
                     name,
                     run=name,
@@ -349,8 +351,9 @@ if __name__ == '__main__':
                 # calculate computation usage
                 for result in results:
                     total_computation += result.last_result['elapsed_time']
-
+                best_configs = defaultdict(list)
                 for result in results[:num_result_per_cv]:
+                    best_configs[gr_id].append(result.config)
                     final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                     logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
 
@@ -365,6 +368,8 @@ if __name__ == '__main__':
             }
             gr_result = gr_spliter.train(final_policy_group, config)
             gr_results.append(gr_result)
+            del gr_result
+            torch.cuda.empty_cache()
 
     gr_assign = gr_spliter.gr_assign
     gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
@@ -374,7 +379,8 @@ if __name__ == '__main__':
                 "gr_results": gr_results,
                 "gr_dist_collector": gr_dist_collector,
                 }, base_path+"/search_summary.pt")
-    del gr_spliter, gr_results, gr_dist_collector
+    del gr_spliter, gr_results, gr_dist_collector, best_configs
+    torch.cuda.empty_cache()
     final_policy_group = dict(final_policy_group)
     logger.info(json.dumps(final_policy_group))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))

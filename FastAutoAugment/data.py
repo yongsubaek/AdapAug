@@ -32,6 +32,7 @@ _IMAGENET_PCA = {
     ]
 }
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+NUM_GPU = torch.cuda.device_count()
 
 class GrAugMix(Dataset):
     def __init__(self, datasets, root, gr_assign=None, gr_policies=None, train=True, download=False, transform=None, target_transform=None, gr_ids=None):
@@ -243,7 +244,7 @@ def get_gr_ids(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assig
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
-        # sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
+        # sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, random_state=0)   # 4000 trainset
         # sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         # train_idx, valid_idx = next(sss)
         # targets = [total_trainset.targets[idx] for idx in train_idx]
@@ -432,7 +433,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, random_state=0)   # 4000 trainset
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         train_idx, valid_idx = next(sss)
         # targets = [total_trainset.targets[idx] for idx in train_idx]
@@ -537,13 +538,13 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
     valid_sampler = SubsetSampler(valid_idx)
 
     # trainloader = torch.utils.data.DataLoader(
-    #     total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8, pin_memory=True,
+    #     total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=4 if NUM_GPU==4 else 8, pin_memory=True,
     #     sampler=train_sampler, drop_last=True)
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
         sampler=valid_sampler, drop_last=False)
     # testloader = torch.utils.data.DataLoader(
-    #     testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
+    #     testset, batch_size=batch, shuffle=False, num_workers=4 if NUM_GPU==4 else 8, pin_memory=True,
     #     drop_last=False
     # )
     return validloader
@@ -645,7 +646,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
-        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, test_size=3000, random_state=0)   # 4000 trainset
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=4000, random_state=0)   # 4000 trainset
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         train_idx, valid_idx = next(sss)
         # targets = [total_trainset.targets[idx] for idx in train_idx]
@@ -788,13 +789,13 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
 
 
     trainloader = torch.utils.data.DataLoader(
-        total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8, pin_memory=True,
+        total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=4 if NUM_GPU==4 else 8, pin_memory=True,
         sampler=train_sampler, drop_last=True)
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
         sampler=valid_sampler, drop_last=False)
     testloader = torch.utils.data.DataLoader(
-        testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
+        testset, batch_size=batch, shuffle=False, num_workers=4 if NUM_GPU==4 else 8, pin_memory=True,
         drop_last=False
     )
     return train_sampler, trainloader, validloader, testloader
