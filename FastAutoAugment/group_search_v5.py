@@ -392,7 +392,7 @@ if __name__ == '__main__':
     else:
         search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
         search_info = torch.load(search_load_path)
-        final_policy_group = search_info["final_policy_group"]
+        final_policy_group = search_info["final_policy"]
         gr_ids = search_info["gr_dist_collector"]["last"]
         logger.info(json.dumps(final_policy_group))
         logger.info("loaded search info from {}".format(search_load_path))

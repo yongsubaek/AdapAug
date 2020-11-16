@@ -136,8 +136,8 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
 class GrAugData(Dataset):
     def __init__(self, dataname, transform=None, gr_assign=None, gr_policies=None, gr_ids=None, target_transform=None, **kargs):
         dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
-        self.data = dataset.data
-        self.targets = dataset.targets if dataname != "SVHN" else dataset.labels
+        self.data = dataset.data if dataname != "SVHN" else np.transpose(dataset.data, (0,2,3,1))
+        self.targets = self.labels = dataset.targets if dataname != "SVHN" else dataset.labels
         self.transform = transform
         self.target_transform = target_transform
         self.gr_assign = gr_assign
@@ -792,7 +792,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         sampler=train_sampler, drop_last=True)
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
-        sampler=valid_sampler, drop_last=False)
+        sampler=valid_sampler, drop_last=False if not rand_val else True)
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
         drop_last=False
