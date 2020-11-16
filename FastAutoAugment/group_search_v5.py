@@ -130,11 +130,11 @@ def _get_path(dataset, model, tag, basemodel=True):
 
 
 @ray.remote(num_gpus=1, max_calls=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None, gr_ids=None):
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_ids=None):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, gr_assign=gr_assign, gr_ids=gr_ids)
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_ids=gr_ids)
     return C.get()['model']['type'], cv_id, result
 
 def eval_tta3(config, augment, reporter):
@@ -242,7 +242,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], skip_exist=True)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
@@ -362,9 +362,9 @@ if __name__ == '__main__':
                     for result in results[:num_result_per_cv]:
                         # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
                         final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                        final_policy = remove_deplicates(final_policy)
                         logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
 
-                        final_policy = remove_deplicates(final_policy)
                         final_policy_set.extend(final_policy)
                     final_policy_group[gr_id].extend(final_policy_set)
 
@@ -403,8 +403,8 @@ if __name__ == '__main__':
     num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_ids=gr_ids) for _ in range(num_experiments)] + \
-     [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], gr_ids=gr_ids) for _ in range(num_experiments)] + \
+           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False

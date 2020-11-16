@@ -11,7 +11,7 @@ from FastAutoAugment.networks import get_model, num_class
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 class ModelWrapper(nn.Module):
-    def __init__(self, backbone, gr_num, direct_prob=False):
+    def __init__(self, backbone, gr_num, supervised=False):
         super(ModelWrapper, self).__init__()
         backbone = backbone.cuda()
         feature_extracter_list = list(backbone.children())[:-1]
@@ -21,11 +21,12 @@ class ModelWrapper(nn.Module):
         for name, param in backbone.named_parameters():
             if param.requires_grad:
                 param.requires_grad = False
+        self.gr_num = gr_num
         self.num_features = num_features
-        self.direct_prob = direct_prob
+        self.supervised = supervised
         self.backbone = backbone
         self.linear = nn.Linear(num_features+1, gr_num, bias=True)
-        # torch.nn.init.xavier_uniform_(self.linear.weight)
+        torch.nn.init.uniform_(self.linear.weight, -1.0, 1.0)
 
     def forward(self, data, label=None):
         data = data.cuda()
@@ -34,14 +35,15 @@ class ModelWrapper(nn.Module):
         feature = self.backbone(data)
         label = label.reshape([-1,1]).float().cuda()
         logits = nn.functional.softmax(self.linear(torch.cat([feature, label], 1)), dim=-1)
-        gr_id = logits.max(1)[1]
-        m = Categorical(logits)
-        entropy = m.entropy()
-        if self.direct_prob:
+        if self.supervised:
+            gr_id = logits.max(1)[1]
             log_prob = logits
+            entropy = 0.
         else:
+            m = Categorical(logits)
             gr_id = m.sample()
             log_prob = m.log_prob(gr_id)
+            entropy = m.entropy()
         return gr_id, log_prob, entropy
 
 
@@ -50,6 +52,8 @@ class GrSpliter(object):
         self.childnet = childnet
         self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num).cuda()
         self.optimizer = optim.Adam(self.model.linear.parameters(), lr = 5e-5, betas=(0.,0.999), eps=0.001)
+        self.ent_w = 0.00001
+        self.eps = 1e-3
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda()
         self.transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -99,7 +103,7 @@ class GrSpliter(object):
         else:
             childnet.load_state_dict(ckpt)
         childnet.eval()
-        baseline  = ExponentialMovingAverage(0.9)
+        baseline  = ExponentialMovingAverage(0.95)
         pol_losses = []
         ori_aug = C.get()["aug"]
         C.get()["aug"] = "clean"
@@ -112,15 +116,26 @@ class GrSpliter(object):
                 data = data.cuda()
                 label = label.cuda()
                 gr_ids, log_probs, entropys = self.model(data, label)
-                with torch.no_grad():
-                    aug_data = self.augmentation(data, gr_ids, policy)
-                    rewards = -self.loss_fn(childnet(aug_data), label)
-                baseline.update(rewards.mean())
-                policy_loss = ( -log_probs * (rewards - baseline.value()) ).sum()
-                policy_loss.backward()
+                if not self.supervised:
+                    with torch.no_grad():
+                        aug_data = self.augmentation(data, gr_ids, policy)
+                        rewards = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps) + self.ent_w*entropys
+                    baseline.update(rewards.mean())
+                    loss = ( -log_probs * (rewards - baseline.value()) ).mean()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
+                else:
+                    with torch.no_grad():
+                        losses = torch.zeros(self.model.gr_num, data.size(0))
+                        for i in range(len(self.model.gr_num)):
+                            aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
+                            losses[i] = self.loss_fn(childnet(aug_data), label)
+                        optimal_gr_ids = losses.min(0)
+                    loss = self.loss_fn(log_probs, optimal_gr_ids).mean()
+                    loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                pol_losses.append(float(policy_loss.cpu().detach()))
+                pol_losses.append(float(loss.cpu().detach()))
         C.get()["aug"] = ori_aug
         return pol_losses
 
