@@ -44,17 +44,17 @@ class ModelWrapper(nn.Module):
 
 class GrSpliter(object):
     def __init__(self, childnet, gr_num,
-                 ent_w=0.00001, eps=1e-3,
+                 ent_w=0.001, eps=1e-3,
                  eps_clip=0.2, mode="ppo",
                  eval_step=20
                  ):
         self.mode = mode
-        self.childnet = childnet
-        self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num, mode=self.mode).cuda()
+        # self.childnet = childnet
+        self.model = nn.DataParallel(ModelWrapper(copy.deepcopy(childnet), gr_num, mode=self.mode)).cuda()
         if self.mode == "supervised":
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
         else:
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-5, weight_decay=1e-4)
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 1e-5, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
@@ -72,6 +72,7 @@ class GrSpliter(object):
 
     def gr_assign(self, dataloader):
         # dataloader: just normaized data
+        # TODO: DataParallel
         self.model.eval()
         all_gr_dist = []
         for data, label in dataloader:
@@ -97,6 +98,7 @@ class GrSpliter(object):
     def train(self, policy, config):
         # gr: group별 optimal policy가 주어질 때 평균 reward가 가장 높도록 나누는 assigner
         self.model.train()
+        gr_num = self.model.module.gr_num
         cv_id = config['cv_id']
         load_path = config["load_path"]
         max_step = config["max_step"]
@@ -106,6 +108,7 @@ class GrSpliter(object):
             childnet.load_state_dict(ckpt['model'])
         else:
             childnet.load_state_dict(ckpt)
+        childnet = nn.DataParallel(childnet).cuda()
         childnet.eval()
         pol_losses = []
         ori_aug = C.get()["aug"]
@@ -124,14 +127,14 @@ class GrSpliter(object):
             logits = self.model(data, label)
             if self.mode=="supervised":
                 with torch.no_grad():
-                    losses = torch.zeros(self.model.gr_num, data.size(0)).cuda()
-                    for i in range(self.model.gr_num):
+                    losses = torch.zeros(gr_num, data.size(0)).cuda()
+                    for i in range(gr_num):
                         aug_data = self.augmentation(data, i*torch.ones(data.size(0)), policy)
                         losses[i] = self.loss_fn(childnet(aug_data), label)
                     optimal_gr_ids = losses.min(0)[1]
                 loss = self.loss_fn(logits, optimal_gr_ids).mean()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 report_number = loss
             else:
                 m = Categorical(logits)
@@ -139,11 +142,11 @@ class GrSpliter(object):
                 log_probs = m.log_prob(gr_ids)
                 entropys = m.entropy()
                 with torch.no_grad():
-                    probs = m.log_prob(torch.tensor([[i] for i in range(self.model.gr_num)]).cuda()).exp()
-                    rewards_list = torch.zeros(self.model.gr_num, data.size(0)).cuda()
-                    for i in range(self.model.gr_num):
+                    probs = m.log_prob(torch.tensor([[i] for i in range(gr_num)]).cuda()).exp()
+                    rewards_list = torch.zeros(gr_num, data.size(0)).cuda()
+                    for i in range(gr_num):
                         aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
-                        rewards_list[i] = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps) + self.ent_w*entropys
+                        rewards_list[i] = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps)
                     rewards = torch.tensor([ rewards_list[gr_id][idx] for idx, gr_id in enumerate(gr_ids)]).cuda().detach()
                     # value function as baseline
                     baselines = sum([ prob*reward for prob, reward in zip(probs, rewards_list) ])
@@ -158,15 +161,19 @@ class GrSpliter(object):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
                     loss = -torch.min(surr1, surr2).mean()
+                loss += self.ent_w * entropys.mean()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 report_number = advantages.mean()
             self.optimizer.step()
             self.optimizer.zero_grad()
             reports.append(float(report_number.cpu().detach()))
             if step % self.eval_step == 0 or step == max_step-1:
-                print(f"[step{step}/{max_step}] objective {report_number:.4f}")
-
+                if self.mode == "supervised":
+                    entropy = 0.
+                else:
+                    entropy = (self.ent_w * entropys.mean()).cpu().detach().data
+                print(f"[step{step}/{max_step}] objective {report_number:.4f}, entropy {entropy}")
         C.get()["aug"] = ori_aug
         return reports
 
@@ -246,6 +253,10 @@ def assign_group4(data, label=None):
 
 def assign_group5(data, label=None):
     return [0 for _ in label]
+
+class CustomDataParallel(nn.DataParallel):
+    def __getattr__(self, name):
+        return getattr(self.module, name)
 
 class UnNormalize(object):
     def __init__(self, mean=_CIFAR_MEAN, std=_CIFAR_STD):

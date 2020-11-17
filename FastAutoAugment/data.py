@@ -336,11 +336,9 @@ def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_l
     if not hasattr(total_trainset, "gr_ids"):
         total_trainset.gr_ids = None
     if gr_assign is not None and total_trainset.gr_ids is None:
-        # eval_tta
         temp_trainset = copy.deepcopy(total_trainset)
-        # temp_trainset.transform = transform_test # just normalize
         temp_loader = torch.utils.data.DataLoader(
-            temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
+            temp_trainset, batch_size=batch*torch.cuda.device_count(), shuffle=False, num_workers=4,
             drop_last=False)
         gr_dist = gr_assign(temp_loader)
     return gr_dist, transform_train
