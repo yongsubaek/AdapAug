@@ -408,8 +408,8 @@ if __name__ == '__main__':
     num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], evaluation_interval=20, gr_dist=gr_dist) for _ in range(num_experiments)] + \
-           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], evaluation_interval=20, gr_dist=gr_dist) for _ in range(num_experiments)]
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], evaluation_interval=5, gr_dist=gr_dist) for _ in range(num_experiments)] + \
+           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], evaluation_interval=5, gr_dist=gr_dist) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False

@@ -44,7 +44,7 @@ class ModelWrapper(nn.Module):
 
 class GrSpliter(object):
     def __init__(self, childnet, gr_num,
-                 ent_w=0.001, eps=1e-3,
+                 ent_w=0.01, eps=1e-3,
                  eps_clip=0.2, mode="ppo",
                  eval_step=20
                  ):
