@@ -291,7 +291,7 @@ if __name__ == '__main__':
         for i in range(args.num_policy):
             for j in range(args.num_op):
                 space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-                # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+                space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
                 space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
         num_process_per_gpu = 1
@@ -384,8 +384,8 @@ if __name__ == '__main__':
                 gr_results.append(gr_result)
             torch.save({
                         "gr_results": gr_results,
-                        "gr_dist_collector": gr_dist_collector,
-                        "final_policy": final_policy_group,
+                        "gr_dist_collector": dict(gr_dist_collector),
+                        "final_policy": dict(final_policy_group),
                         }, base_path+"/search_summary.pt")
         gr_assign = gr_spliter.gr_assign
         gr_dist, _ = get_gr_dist(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
