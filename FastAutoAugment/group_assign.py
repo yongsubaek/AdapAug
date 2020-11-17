@@ -39,12 +39,14 @@ class ModelWrapper(nn.Module):
 
 
 class GrSpliter(object):
-    def __init__(self, childnet, gr_num):
+    def __init__(self, childnet, gr_num,
+                 ent_w=0.00001, eps=1e-3
+                 ):
         self.childnet = childnet
         self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num).cuda()
         self.optimizer = optim.Adam(self.model.linear.parameters(), lr = 5e-5, betas=(0.,0.999), eps=0.001)
-        self.ent_w = 0.00001
-        self.eps = 1e-3
+        self.ent_w = ent_w
+        self.eps = eps
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda()
         self.transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -124,6 +126,7 @@ class GrSpliter(object):
                     loss = ( -log_probs * (rewards - baselines) ).mean()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
+                    report_number = rewards
                 elif self.mode=="supervised":
                     with torch.no_grad():
                         losses = torch.zeros(self.model.gr_num, data.size(0))
@@ -133,11 +136,12 @@ class GrSpliter(object):
                         optimal_gr_ids = losses.min(0)
                     loss = self.loss_fn(log_probs, optimal_gr_ids).mean()
                     loss.backward()
+                    report_number = loss
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                pol_losses.append(float(loss.cpu().detach()))
+                reports.append(float(report_number.cpu().detach()))
         C.get()["aug"] = ori_aug
-        return pol_losses
+        return reports
 
 
 class ExponentialMovingAverage(object):

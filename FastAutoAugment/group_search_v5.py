@@ -312,7 +312,8 @@ if __name__ == '__main__':
             final_policy_group = defaultdict(lambda : [])
             for cv_id in range(cv_num):
                 gr_assign = gr_spliter.gr_assign
-                gr_ids = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+                gr_ids, transform = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+                gr_spliter.transform = transform
                 gr_dist_collector[cv_id].append(gr_ids)
                 print()
                 print(Counter(gr_ids))
@@ -377,7 +378,7 @@ if __name__ == '__main__':
                 gr_results.append(gr_result)
 
         gr_assign = gr_spliter.gr_assign
-        gr_ids = get_gr_ids(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+        gr_ids, _ = get_gr_ids(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
         gr_dist_collector["last"] = gr_ids
         gr_dist_collector = dict(gr_dist_collector)
         final_policy_group = dict(final_policy_group)
@@ -386,7 +387,7 @@ if __name__ == '__main__':
                     "gr_dist_collector": gr_dist_collector,
                     "final_policy": final_policy_group,
                     }, base_path+"/search_summary.pt")
-        del gr_spliter, gr_results, gr_dist_collector
+        del gr_spliter, gr_results, gr_dist_collector, gr_assign
         logger.info(json.dumps(final_policy_group))
         logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     else:

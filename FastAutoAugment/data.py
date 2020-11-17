@@ -32,7 +32,8 @@ _IMAGENET_PCA = {
     ]
 }
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-
+_CIFAR_STD2 = (0.2470, 0.2435, 0.2616)
+_SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728)(0.1980, 0.2010, 0.1970)
 class GrAugMix(Dataset):
     def __init__(self, datasets, root, gr_assign=None, gr_policies=None, train=True, download=False, transform=None, target_transform=None, gr_ids=None):
         train_size = 50000
@@ -180,15 +181,19 @@ def get_gr_ids(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assig
     # augmented datasets without split
     # only for calculation of gr_ids
     if 'cifar' in dataset or 'svhn' in dataset:
+        if "cifar" in dataset:
+            _mean, _std = _CIFAR_MEAN, _CIFAR_STD
+        else:
+            _mean, _std = _SVHN_MEAN, _SVHN_STD
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
     elif 'imagenet' in dataset:
         input_size = 224
@@ -334,19 +339,23 @@ def get_gr_ids(dataset, batch, dataroot, multinode=False, target_lb=-1, gr_assig
             drop_last=False)
         total_trainset.gr_ids = gr_assign(temp_loader)
     # return total_trainset, testset
-    return total_trainset.gr_ids
+    return total_trainset.gr_ids, transform_train
 
 def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_ids):
     if 'cifar' in dataset or 'svhn' in dataset:
+        if "cifar" in dataset:
+            _mean, _std = _CIFAR_MEAN, _CIFAR_STD
+        else:
+            _mean, _std = _SVHN_MEAN, _SVHN_STD
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
     elif 'imagenet' in dataset:
         input_size = 224
@@ -551,15 +560,19 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
 
 def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, rand_val=False):
     if 'cifar' in dataset or 'svhn' in dataset:
+        if "cifar" in dataset:
+            _mean, _std = _CIFAR_MEAN, _CIFAR_STD
+        else:
+            _mean, _std = _SVHN_MEAN, _SVHN_STD
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+            transforms.Normalize(_mean, _std),
         ])
     elif 'imagenet' in dataset:
         input_size = 224
