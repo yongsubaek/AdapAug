@@ -11,7 +11,7 @@ from FastAutoAugment.networks import get_model, num_class
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 class ModelWrapper(nn.Module):
-    def __init__(self, backbone, gr_num, supervised=False):
+    def __init__(self, backbone, gr_num, mode="reinforce"):
         super(ModelWrapper, self).__init__()
         backbone = backbone.cuda()
         feature_extracter_list = list(backbone.children())[:-1]
@@ -23,28 +23,19 @@ class ModelWrapper(nn.Module):
                 param.requires_grad = False
         self.gr_num = gr_num
         self.num_features = num_features
-        self.supervised = supervised
+        self.mode = mode
         self.backbone = backbone
         self.linear = nn.Linear(num_features+1, gr_num, bias=True)
         torch.nn.init.uniform_(self.linear.weight, -1.0, 1.0)
 
-    def forward(self, data, label=None):
+    def forward(self, data, label=None, get_logit=False):
         data = data.cuda()
         if label is None:
             label = torch.zeros(len(data), 1)
         feature = self.backbone(data)
         label = label.reshape([-1,1]).float().cuda()
         logits = nn.functional.softmax(self.linear(torch.cat([feature, label], 1)), dim=-1)
-        if self.supervised:
-            gr_id = logits.max(1)[1]
-            log_prob = logits
-            entropy = 0.
-        else:
-            m = Categorical(logits)
-            gr_id = m.sample()
-            log_prob = m.log_prob(gr_id)
-            entropy = m.entropy()
-        return gr_id, log_prob, entropy
+        return logits
 
 
 class GrSpliter(object):
@@ -103,7 +94,6 @@ class GrSpliter(object):
         else:
             childnet.load_state_dict(ckpt)
         childnet.eval()
-        baseline  = ExponentialMovingAverage(0.95)
         pol_losses = []
         ori_aug = C.get()["aug"]
         C.get()["aug"] = "clean"
@@ -115,16 +105,26 @@ class GrSpliter(object):
             for data, label in loader:
                 data = data.cuda()
                 label = label.cuda()
-                gr_ids, log_probs, entropys = self.model(data, label)
-                if not self.supervised:
+                logits = self.model(data, label)
+                if self.mode=="reinforce":
+                    m = Categorical(logits)
+                    gr_ids = m.sample()
+                    log_probs = m.log_prob(gr_ids)
+                    entropys = m.entropy()
                     with torch.no_grad():
-                        aug_data = self.augmentation(data, gr_ids, policy)
-                        rewards = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps) + self.ent_w*entropys
-                    baseline.update(rewards.mean())
-                    loss = ( -log_probs * (rewards - baseline.value()) ).mean()
+                        probs = torch.zeros(self.model.gr_num)
+                        rewards_list = torch.zeros(self.model.gr_num, data.size(0))
+                        for i in range(len(self.model.gr_num)):
+                            probs[i] = m.log_prob(i).exp()
+                            aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
+                            rewards_list[i] = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps) + self.ent_w*entropys
+                        rewards = torch.tensor([ rewards_list[gr_id][idx] for idx, gr_id in enumerate(gr_ids)])
+                        # value function as baseline
+                        baselines = sum([ prob*reward for prob, reward in zip(probs, rewards_list) ])
+                    loss = ( -log_probs * (rewards - baselines) ).mean()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
-                else:
+                elif self.mode=="supervised":
                     with torch.no_grad():
                         losses = torch.zeros(self.model.gr_num, data.size(0))
                         for i in range(len(self.model.gr_num)):
