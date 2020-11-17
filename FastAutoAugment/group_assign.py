@@ -126,7 +126,34 @@ class GrSpliter(object):
                     loss = ( -log_probs * (rewards - baselines) ).mean()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
-                    report_number = rewards
+                    report_number = rewards.mean()
+                elif self.mode=="ppo":
+                    m = Categorical(logits)
+                    with torch.no_grad():
+                        # make old decision
+                        gr_ids = m.sample()
+                        old_log_probs = m.log_prob(gr_ids).detach()
+                        entropys = m.entropy()
+                        # calculate baseline
+                        probs = torch.zeros(self.model.gr_num)
+                        rewards_list = torch.zeros(self.model.gr_num, data.size(0))
+                        for i in range(len(self.model.gr_num)):
+                            probs[i] = m.log_prob(i).exp()
+                            aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
+                            rewards_list[i] = 1. / (self.loss_fn(childnet(aug_data), label) + self.eps) + self.ent_w*entropys
+                        rewards = torch.tensor([ rewards_list[gr_id][idx] for idx, gr_id in enumerate(gr_ids)])
+                        # value function as baseline
+                        baselines = sum([ prob*reward for prob, reward in zip(probs, rewards_list) ])
+                        advantages = rewards - baselines
+                    gr_ids = m.sample()
+                    log_probs = m.log_prob(gr_ids)
+                    ratios = (log_probs - old_log_probs).exp()
+                    surr1 = ratios * advantages
+                    surr2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip) * advantages
+                    loss = -(surr1, surr2).min().mean()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
+                    report_number = rewards.mean()
                 elif self.mode=="supervised":
                     with torch.no_grad():
                         losses = torch.zeros(self.model.gr_num, data.size(0))
