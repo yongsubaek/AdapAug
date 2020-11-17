@@ -44,7 +44,7 @@ class ModelWrapper(nn.Module):
 
 class GrSpliter(object):
     def __init__(self, childnet, gr_num,
-                 ent_w=0.01, eps=1e-3,
+                 ent_w=0.1, eps=1e-3,
                  eps_clip=0.2, mode="ppo",
                  eval_step=20
                  ):
@@ -54,7 +54,7 @@ class GrSpliter(object):
         if self.mode == "supervised":
             self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
         else:
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 1e-5, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 3e-5, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
@@ -161,7 +161,7 @@ class GrSpliter(object):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
                     loss = -torch.min(surr1, surr2).mean()
-                loss += self.ent_w * entropys.mean()
+                loss -= self.ent_w * entropys.mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 report_number = advantages.mean()
