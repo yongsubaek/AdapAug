@@ -11,6 +11,7 @@ import os
 from collections import OrderedDict
 
 import torch
+from torch.distributions import Categorical
 from torch import nn, optim
 from torch.nn.parallel.data_parallel import DataParallel
 from torch.nn.parallel import DistributedDataParallel
@@ -165,12 +166,20 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     return metrics
 
 
-def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None, gr_ids=None):
+def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5, reduced=False, gr_assign=None, gr_dist=None):
     total_batch = C.get()["batch"]
-    dataset = C.get()["dataset"]
+    if 'test_dataset' in C.get().conf:
+        dataset = C.get()['test_dataset']
+    else:
+        dataset = C.get()["dataset"]
     if dataloaders:
         trainsampler, trainloader, validloader, testloader_ = dataloaders
     else:
+        if gr_dist is not None:
+            m = Categorical(gr_dist)
+            gr_ids = m.sample().numpy()
+        else:
+            gr_ids = None
         trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
     if local_rank >= 0:
         dist.init_process_group(backend='nccl', init_method='env://', world_size=int(os.environ['WORLD_SIZE']))
@@ -377,6 +386,10 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
                         'model': model.state_dict(),
                         'ema': ema.state_dict() if ema is not None else None,
                     }, save_path)
+
+            if gr_dist is not None:
+                gr_ids = m.sample().numpy()
+                trainsampler, trainloader, validloader, testloader_ = get_dataloaders(C.get()["dataset"], C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
 
     del model
 

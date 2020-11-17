@@ -5,7 +5,7 @@ import time
 from collections import OrderedDict, defaultdict, Counter
 
 import torch
-
+from torch.distributions import Categorical
 import numpy as np
 from hyperopt import hp
 import ray
@@ -24,7 +24,7 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from FastAutoAugment.augmentations import augment_list
 from FastAutoAugment.common import get_logger, add_filehandler
-from FastAutoAugment.data import get_dataloaders, get_gr_ids, get_post_dataloader
+from FastAutoAugment.data import get_dataloaders, get_gr_dist, get_post_dataloader
 from FastAutoAugment.metrics import Accumulator, accuracy
 from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
@@ -130,11 +130,11 @@ def _get_path(dataset, model, tag, basemodel=True):
 
 
 @ray.remote(num_gpus=1, max_calls=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_ids=None):
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_ids=gr_ids)
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_dist=gr_dist)
     return C.get()['model']['type'], cv_id, result
 
 def eval_tta3(config, augment, reporter):
@@ -211,6 +211,8 @@ if __name__ == '__main__':
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--iter', type=int, default=5)
     parser.add_argument('--childaug', type=str, default="clean")
+    parser.add_argument('--mode', type=str, default="ppo")
+    parser.add_argument('--g_step', type=int, default=100)
     parser.add_argument('--load_search', type=str)
 
     args = parser.parse_args()
@@ -302,7 +304,7 @@ if __name__ == '__main__':
         else:
             childnet.load_state_dict(ckpt)
         # g definition
-        gr_spliter = GrSpliter(childnet, gr_num=args.gr_num)
+        gr_spliter = GrSpliter(childnet, gr_num=args.gr_num, mode=args.mode)
         del childnet, ckpt
         gr_results = []
         gr_dist_collector = defaultdict(list)
@@ -312,10 +314,12 @@ if __name__ == '__main__':
             final_policy_group = defaultdict(lambda : [])
             for cv_id in range(cv_num):
                 gr_assign = gr_spliter.gr_assign
-                gr_ids, transform = get_gr_ids(C.get()['dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+                gr_dist, transform = get_gr_dist(C.get()['dataset'], C.get()['batch'], args.dataroot, cv_id, gr_assign=gr_assign)
                 gr_spliter.transform = transform
-                gr_dist_collector[cv_id].append(gr_ids)
+                gr_dist_collector[cv_id].append(gr_dist)
                 print()
+                m = Categorical(gr_dist)
+                gr_ids = m.sample().numpy()
                 print(Counter(gr_ids))
                 for gr_id in range(gr_num):
                     torch.cuda.empty_cache()
@@ -372,14 +376,14 @@ if __name__ == '__main__':
                 config = {
                     'dataroot': args.dataroot, 'load_path': paths[cv_id],
                     'cv_ratio_test': args.cv_ratio, "cv_id": cv_id,
-                    'rep': 1
+                    'max_step': args.g_step
                 }
                 gr_result = gr_spliter.train(final_policy_group, config)
                 gr_results.append(gr_result)
 
         gr_assign = gr_spliter.gr_assign
-        gr_ids, _ = get_gr_ids(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-        gr_dist_collector["last"] = gr_ids
+        gr_dist, _ = get_gr_dist(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
+        gr_dist_collector["last"] = gr_dist
         gr_dist_collector = dict(gr_dist_collector)
         final_policy_group = dict(final_policy_group)
         torch.save({
@@ -394,7 +398,7 @@ if __name__ == '__main__':
         search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
         search_info = torch.load(search_load_path)
         final_policy_group = search_info["final_policy"]
-        gr_ids = search_info["gr_dist_collector"]["last"]
+        gr_dist = search_info["gr_dist_collector"]["last"]
         logger.info(json.dumps(final_policy_group))
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
@@ -404,8 +408,8 @@ if __name__ == '__main__':
     num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], gr_ids=gr_ids) for _ in range(num_experiments)] + \
-           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_ids=gr_ids) for _ in range(num_experiments)]
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], evaluation_interval=20, gr_dist=gr_dist) for _ in range(num_experiments)] + \
+           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], evaluation_interval=20, gr_dist=gr_dist) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False
@@ -438,6 +442,7 @@ if __name__ == '__main__':
     logger.info('getting results...')
     final_results = ray.get(reqs)
     # Affinity Calculation
+    gr_ids = torch.max(gr_dist,-1).numpy()
     augment = {
         'dataroot': args.dataroot, 'load_paths': paths,
         'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
