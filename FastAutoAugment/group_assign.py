@@ -25,8 +25,13 @@ class ModelWrapper(nn.Module):
         self.num_features = num_features
         self.mode = mode
         self.backbone = backbone
-        self.linear = nn.Linear(num_features+1, gr_num, bias=True)
-        torch.nn.init.uniform_(self.linear.weight, -1.0, 1.0)
+        # self.linear = nn.Linear(num_features+1, gr_num, bias=True)
+        self.linear = nn.Sequential(
+                            nn.Linear(num_features+1, 128),
+                            nn.ReLU(),
+                            nn.Linear(128, gr_num)
+                            )
+        # torch.nn.init.uniform_(self.linear.weight, -1.0, 1.0)
 
     def forward(self, data, label=None):
         data = data.cuda()
@@ -41,25 +46,29 @@ class GrSpliter(object):
     def __init__(self, childnet, gr_num,
                  ent_w=0.00001, eps=1e-3,
                  eps_clip=0.2, mode="ppo",
-                 eval_step=100
+                 eval_step=20
                  ):
-        self.childnet = childnet
         self.mode = mode
+        self.childnet = childnet
         self.model = ModelWrapper(copy.deepcopy(self.childnet), gr_num, mode=self.mode).cuda()
-        self.optimizer = optim.Adam(self.model.linear.parameters(), lr = 5e-5, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+        if self.mode == "supervised":
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+        else:
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-5, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
         self.eval_step = eval_step
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda()
-        self.transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
-        ])
-        if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
-            self.transform.transforms.append(CutoutDefault(C.get()['cutout']))
+        self.transform = None
+        # self.transform = transforms.Compose([
+        #     transforms.RandomCrop(32, padding=4),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+        # ])
+        # if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
+        #     self.transform.transforms.append(CutoutDefault(C.get()['cutout']))
 
     def gr_assign(self, dataloader):
         # dataloader: just normaized data
@@ -87,8 +96,6 @@ class GrSpliter(object):
 
     def train(self, policy, config):
         # gr: group별 optimal policy가 주어질 때 평균 reward가 가장 높도록 나누는 assigner
-        # linear part만 학습
-        # torch.nn.DataParallel
         self.model.train()
         cv_id = config['cv_id']
         load_path = config["load_path"]
@@ -108,22 +115,23 @@ class GrSpliter(object):
         reports = []
         for step in range(max_step):
             try:
-              data, label = next(loader_iter)
+                data, label = next(loader_iter)
             except:
-              loader_iter = iter(dataloader)
-              data, label = next(loader_iter)
+                loader_iter = iter(dataloader)
+                data, label = next(loader_iter)
             data = data.cuda()
             label = label.cuda()
             logits = self.model(data, label)
             if self.mode=="supervised":
                 with torch.no_grad():
-                    losses = torch.zeros(self.model.gr_num, data.size(0))
+                    losses = torch.zeros(self.model.gr_num, data.size(0)).cuda()
                     for i in range(self.model.gr_num):
                         aug_data = self.augmentation(data, i*torch.ones(data.size(0)), policy)
                         losses[i] = self.loss_fn(childnet(aug_data), label)
-                    optimal_gr_ids = losses.min(0)
+                    optimal_gr_ids = losses.min(0)[1]
                 loss = self.loss_fn(logits, optimal_gr_ids).mean()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
                 report_number = loss
             else:
                 m = Categorical(logits)
@@ -131,7 +139,7 @@ class GrSpliter(object):
                 log_probs = m.log_prob(gr_ids)
                 entropys = m.entropy()
                 with torch.no_grad():
-                    probs = m.log_prob(torch.tensor([[i] for i in range(self.model.gr_num)]).cuda())
+                    probs = m.log_prob(torch.tensor([[i] for i in range(self.model.gr_num)]).cuda()).exp()
                     rewards_list = torch.zeros(self.model.gr_num, data.size(0)).cuda()
                     for i in range(self.model.gr_num):
                         aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
@@ -141,9 +149,8 @@ class GrSpliter(object):
                     baselines = sum([ prob*reward for prob, reward in zip(probs, rewards_list) ])
                     advantages = rewards - baselines
                 if self.mode=="reinforce":
-                    loss = ( -log_probs * (rewards - baselines) ).mean()
+                    loss = ( -log_probs * advantages ).mean()
                 elif self.mode=="ppo":
-                    m = Categorical(logits)
                     old_log_probs = log_probs.detach()
                     gr_ids = m.sample()
                     log_probs = m.log_prob(gr_ids)
@@ -153,11 +160,11 @@ class GrSpliter(object):
                     loss = -torch.min(surr1, surr2).mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.linear.parameters(), 5.0)
-                report_number = rewards.mean()
+                report_number = advantages.mean()
             self.optimizer.step()
             self.optimizer.zero_grad()
             reports.append(float(report_number.cpu().detach()))
-            if step // self.eval_step == 0 or step == max_step-1:
+            if step % self.eval_step == 0 or step == max_step-1:
                 print(f"[step{step}/{max_step}] objective {report_number:.4f}")
 
         C.get()["aug"] = ori_aug
