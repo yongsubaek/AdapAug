@@ -213,6 +213,7 @@ if __name__ == '__main__':
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--g_step', type=int, default=100)
+    parser.add_argument('--max_aug', type=int, default=100)
     parser.add_argument('--load_search', type=str)
 
     args = parser.parse_args()
@@ -310,8 +311,8 @@ if __name__ == '__main__':
         gr_dist_collector = defaultdict(list)
         # best_configs = defaultdict(lambda: None)
         # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+        final_policy_group = defaultdict(lambda : [])
         for r in range(args.repeat):  # run multiple times.
-            final_policy_group = defaultdict(lambda : [])
             for cv_id in range(cv_num):
                 gr_assign = gr_spliter.gr_assign
                 gr_dist, transform = get_gr_dist(C.get()['dataset'], C.get()['batch'], args.dataroot, cv_id, gr_assign=gr_assign)
@@ -372,6 +373,7 @@ if __name__ == '__main__':
 
                         final_policy_set.extend(final_policy)
                     final_policy_group[gr_id].extend(final_policy_set)
+                    final_policy_group[gr_id] = final_policy_group[gr_id][-args.max_aug:]
 
                 config = {
                     'dataroot': args.dataroot, 'load_path': paths[cv_id],
@@ -380,7 +382,11 @@ if __name__ == '__main__':
                 }
                 gr_result = gr_spliter.train(final_policy_group, config)
                 gr_results.append(gr_result)
-
+            torch.save({
+                        "gr_results": gr_results,
+                        "gr_dist_collector": gr_dist_collector,
+                        "final_policy": final_policy_group,
+                        }, base_path+"/search_summary.pt")
         gr_assign = gr_spliter.gr_assign
         gr_dist, _ = get_gr_dist(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
         gr_dist_collector["last"] = gr_dist
