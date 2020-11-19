@@ -180,7 +180,7 @@ class GrAugData(Dataset):
         return img, target
 
 
-def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_lb=-1, gr_assign=None):
+def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, get_dataset=False):
     # augmented datasets without split
     # only for calculation of gr_ids
     if 'cifar' in dataset or 'svhn' in dataset:
@@ -332,7 +332,8 @@ def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_l
         testset = GrAugMix(dataset.split("_"), root=dataroot, train=False, download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
-
+    if get_dataset:
+        return total_trainset, testset
     if not hasattr(total_trainset, "gr_ids"):
         total_trainset.gr_ids = None
     if gr_assign is not None and total_trainset.gr_ids is None:

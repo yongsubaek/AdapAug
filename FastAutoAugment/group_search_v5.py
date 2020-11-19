@@ -448,7 +448,7 @@ if __name__ == '__main__':
     logger.info('getting results...')
     final_results = ray.get(reqs)
     # Affinity Calculation
-    gr_ids = torch.max(gr_dist,-1).numpy()
+    gr_ids = torch.max(gr_dist,-1)[1].numpy()
     augment = {
         'dataroot': args.dataroot, 'load_paths': paths,
         'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
