@@ -387,9 +387,9 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
                         'ema': ema.state_dict() if ema is not None else None,
                     }, save_path)
 
-            if gr_dist is not None:
-                gr_ids = m.sample().numpy()
-                trainsampler, trainloader, validloader, testloader_ = get_dataloaders(dataset, C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
+        if gr_dist is not None:
+            gr_ids = m.sample().numpy()
+            trainsampler, trainloader, validloader, testloader_ = get_dataloaders(dataset, C.get()['batch'], dataroot, test_ratio, split_idx=cv_fold, multinode=(local_rank >= 0), gr_assign=gr_assign, gr_ids=gr_ids)
 
     del model
 
