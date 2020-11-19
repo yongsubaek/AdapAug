@@ -137,6 +137,73 @@ def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, sa
     result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_dist=gr_dist)
     return C.get()['model']['type'], cv_id, result
 
+def eval_tta(config, augment, reporter):
+    C.get()
+    C.get().conf = config
+    save_path = augment['save_path']
+    cv_id, gr_id = augment["cv_id"], augment["gr_id"]
+    gr_ids = augment["gr_ids"]
+
+    # setup - provided augmentation rules
+    C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
+
+    # eval
+    model = get_model(C.get()['model'], num_class(C.get()['dataset']))
+    ckpt = torch.load(save_path)
+    if 'model' in ckpt:
+        model.load_state_dict(ckpt['model'])
+    else:
+        model.load_state_dict(ckpt)
+    model.eval()
+
+    loaders = []
+    for _ in range(augment['num_policy']):  # TODO
+        loader = get_post_dataloader(C.get()["dataset"], C.get()['batch'], augment["dataroot"], augment['cv_ratio_test'], cv_id, gr_id, gr_ids)
+        loaders.append(iter(loader))
+
+    start_t = time.time()
+    metrics = Accumulator()
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    try:
+        while True:
+            losses = []
+            corrects = []
+            for loader in loaders:
+                data, label = next(loader)
+                data = data.cuda()
+                label = label.cuda()
+
+                pred = model(data)
+
+                loss = loss_fn(pred, label)
+                losses.append(loss.detach().cpu().numpy().reshape(1,-1)) # (1,N)
+
+                _, pred = pred.topk(1, 1, True, True)
+                pred = pred.t()
+                correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
+                corrects.append(correct)
+                del loss, correct, pred, data, label
+
+            losses = np.concatenate(losses)
+            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+
+            corrects = np.concatenate(corrects)
+            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            metrics.add_dict({
+                'minus_loss': -1 * np.sum(losses_min),
+                'correct': np.sum(corrects_max),
+                'cnt': corrects_max.size
+            })
+            del corrects, corrects_max
+    except StopIteration:
+        pass
+
+    del model
+    metrics = metrics / 'cnt'
+    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
+    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    return metrics['correct']
+
 def eval_tta3(config, augment, reporter):
     C.get()
     C.get().conf = config
@@ -146,7 +213,6 @@ def eval_tta3(config, augment, reporter):
 
     # setup - provided augmentation rules
     C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
-    loader = get_post_dataloader(C.get()["dataset"], C.get()['batch'], augment["dataroot"], augment['cv_ratio_test'], cv_id, gr_id, gr_ids)
 
     # eval
     model = get_model(C.get()['model'], num_class(C.get()['dataset']))
@@ -157,6 +223,8 @@ def eval_tta3(config, augment, reporter):
         model.load_state_dict(ckpt)
     del ckpt
     model.eval()
+
+    loader = get_post_dataloader(C.get()["dataset"], C.get()['batch'], augment["dataroot"], augment['cv_ratio_test'], cv_id, gr_id, gr_ids)
 
     start_t = time.time()
     metrics = Accumulator()
@@ -180,7 +248,7 @@ def eval_tta3(config, augment, reporter):
         del loss, correct, pred, data, label
     del model, loader
     metrics = metrics / 'cnt'
-    gpu_secs = (time.time() - start_t) * (torch.cuda.device_count()-1)
+    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 

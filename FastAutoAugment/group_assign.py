@@ -10,6 +10,7 @@ from FastAutoAugment.data import get_dataloaders, CutoutDefault, Augmentation
 from FastAutoAugment.networks import get_model, num_class
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+_SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 class ModelWrapper(nn.Module):
     def __init__(self, backbone, gr_num, mode="reinforce"):
         super(ModelWrapper, self).__init__()
@@ -83,6 +84,10 @@ class GrSpliter(object):
 
     def augmentation(self, data, gr_ids, policy):
         aug_imgs = []
+        if "cifar" in C.get()["dataset"]:
+            mean, std = _CIFAR_MEAN, _CIFAR_STD
+        elif "svhn" in C.get()["dataset"]:
+            mean, std = _SVHN_MEAN, _SVHN_STD
         # applied_policies = []
         for gr_id, img in zip(gr_ids, data):
             pil_img = transforms.ToPILImage()(UnNormalize()(img.cpu()))
