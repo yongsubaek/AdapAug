@@ -2,15 +2,14 @@ import copy
 import os
 import sys
 import time
-from collections import OrderedDict, defaultdict, Counter
+from collections import OrderedDict, defaultdict
 
 import torch
-from torch.distributions import Categorical
+
 import numpy as np
 from hyperopt import hp
 import ray
 import gorilla
-from ray import tune
 from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
@@ -24,7 +23,7 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from FastAutoAugment.augmentations import augment_list
 from FastAutoAugment.common import get_logger, add_filehandler
-from FastAutoAugment.data import get_dataloaders, get_gr_dist, get_post_dataloader
+from FastAutoAugment.data import get_dataloaders
 from FastAutoAugment.metrics import Accumulator, accuracy
 from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
@@ -34,13 +33,10 @@ import csv
 
 top1_valid_by_cv = defaultdict(lambda: list)
 
-def save_res(iter, acc, best, term):
-    base_path = f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
-    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
+def save_res(fname, *args):
+    f = open(os.path.join(base_path, fname+"_bo_result.csv"), "a", newline="")
     wr = csv.writer(f)
-    wr.writerow([iter, acc, best, term])
+    wr.writerow([*args])
     f.close()
 
 def step_w_log(self):
@@ -79,7 +75,7 @@ def get_affinity(aug, aff_bases, config, augment):
 
     aug_loaders = []
     for cv_id in range(cv_num):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_ids=augment["gr_ids"])
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_assign=augment["gr_assign"])
         aug_loaders.append(validloader)
         del tl, tl2
 
@@ -129,20 +125,19 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1, max_calls=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
+@ray.remote(num_gpus=1)
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_dist=gr_dist)
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, gr_assign=gr_assign)
     return C.get()['model']['type'], cv_id, result
 
 def eval_tta(config, augment, reporter):
     C.get()
     C.get().conf = config
-    save_path = augment['save_path']
-    cv_id, gr_id = augment["cv_id"], augment["gr_id"]
-    gr_ids = augment["gr_ids"]
+    cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
+    gr_id = augment["gr_id"]
 
     # setup - provided augmentation rules
     C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
@@ -158,8 +153,9 @@ def eval_tta(config, augment, reporter):
 
     loaders = []
     for _ in range(augment['num_policy']):  # TODO
-        loader = get_post_dataloader(C.get()["dataset"], C.get()['batch'], augment["dataroot"], augment['cv_ratio_test'], cv_id, gr_id, gr_ids)
-        loaders.append(iter(loader))
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
+        loaders.append(iter(validloader))
+        del tl, tl2
 
     start_t = time.time()
     metrics = Accumulator()
@@ -175,7 +171,7 @@ def eval_tta(config, augment, reporter):
 
                 pred = model(data)
 
-                loss = loss_fn(pred, label)
+                loss = loss_fn(pred, label) # (N)
                 losses.append(loss.detach().cpu().numpy().reshape(1,-1)) # (1,N)
 
                 _, pred = pred.topk(1, 1, True, True)
@@ -185,10 +181,10 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+            losses_min = np.min(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            corrects_max = np.max(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
                 'minus_loss': -1 * np.sum(losses_min),
                 'correct': np.sum(corrects_max),
@@ -204,12 +200,12 @@ def eval_tta(config, augment, reporter):
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
-def eval_tta3(config, augment, reporter):
+def eval_tta2(config, augment, reporter):
     C.get()
     C.get().conf = config
-    save_path = augment['save_path']
-    cv_id, gr_id = augment["cv_id"], augment["gr_id"]
-    gr_ids = augment["gr_ids"]
+    cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
+    gr_id = augment["gr_id"]
+    num_repeat = 1
 
     # setup - provided augmentation rules
     C.get()['aug'] = policy_decoder(augment, augment['num_policy'], augment['num_op'])
@@ -221,32 +217,37 @@ def eval_tta3(config, augment, reporter):
         model.load_state_dict(ckpt['model'])
     else:
         model.load_state_dict(ckpt)
-    del ckpt
     model.eval()
 
-    loader = get_post_dataloader(C.get()["dataset"], C.get()['batch'], augment["dataroot"], augment['cv_ratio_test'], cv_id, gr_id, gr_ids)
+    loaders = []
+    for i in range(num_repeat):
+        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
+        loaders.append(validloader)
+        del tl, tl2
+
 
     start_t = time.time()
     metrics = Accumulator()
     loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
-    for data, label in loader:
-        data = data.cuda()
-        label = label.cuda()
+    for loader in loaders:
+        for data, label in loader:
+            data = data.cuda()
+            label = label.cuda()
 
-        pred = model(data)
-        loss = loss_fn(pred, label) # (N)
+            pred = model(data)
+            loss = loss_fn(pred, label) # (N)
 
-        _, pred = pred.topk(1, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
+            _, pred = pred.topk(1, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
 
-        metrics.add_dict({
-            'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
-            'correct': np.sum(correct),
-            'cnt': len(data)
-        })
-        del loss, correct, pred, data, label
-    del model, loader
+            metrics.add_dict({
+                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'correct': np.sum(correct),
+                'cnt': len(data)
+            })
+            del loss, correct, pred, data, label
+    del model
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
@@ -279,13 +280,8 @@ if __name__ == '__main__':
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--iter', type=int, default=5)
     parser.add_argument('--childaug', type=str, default="clean")
-    parser.add_argument('--mode', type=str, default="ppo")
-    parser.add_argument('--g_step', type=int, default=100)
-    parser.add_argument('--max_aug', type=int, default=100)
-    parser.add_argument('--load_search', type=str)
 
     args = parser.parse_args()
-    torch.backends.cudnn.benchmark = True
     C.get()['exp_name'] = args.exp_name
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
@@ -300,11 +296,9 @@ if __name__ == '__main__':
 
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
+    gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
-    ori_aug = C.get()["aug"]
-    if 'test_dataset' not in C.get().conf:
-        C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
 
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
@@ -313,7 +307,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
     reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], skip_exist=True)
         for i in range(cv_num)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
@@ -346,145 +340,91 @@ if __name__ == '__main__':
         logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
         # for Affinity calculation
         aff_bases.append(r_dict['top1_valid'])
-        del r_model, r_cv, r_dict
     logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
     if args.until == 1:
         sys.exit(0)
-    del latest_ckpt, pretrain_results, reqs
-    if args.load_search is None:
-        logger.info('----- Search Test-Time Augmentation Policies -----')
-        w.start(tag='search-g_train')
-        ops = augment_list(False)
-        space = {}
-        for i in range(args.num_policy):
-            for j in range(args.num_op):
-                space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-                space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
-                space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-        num_process_per_gpu = 1
-        total_computation = 0
-        reward_attr = 'top1_valid'      # top1_valid or minus_loss
-        # load childnet for g
-        childnet = get_model(C.get()['model'], num_class(C.get()['dataset']))
-        ckpt = torch.load(paths[0])
-        if 'model' in ckpt:
-            childnet.load_state_dict(ckpt['model'])
-        else:
-            childnet.load_state_dict(ckpt)
-        # g definition
-        gr_spliter = GrSpliter(childnet, gr_num=args.gr_num, mode=args.mode)
-        del childnet, ckpt
-        gr_results = []
-        gr_dist_collector = defaultdict(list)
-        # best_configs = defaultdict(lambda: None)
-        # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
-        final_policy_group = defaultdict(lambda : [])
-        for r in range(args.repeat):  # run multiple times.
+    logger.info('----- Search Test-Time Augmentation Policies -----')
+    w.start(tag='search')
+    ops = augment_list(False)
+    space = {}
+    for i in range(args.num_policy):
+        for j in range(args.num_op):
+            space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
+            # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+            space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
+
+    num_process_per_gpu = 2 if torch.cuda.device_count()==8 else 3
+    total_computation = 0
+    reward_attr = 'top1_valid'      # top1_valid or minus_loss
+    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+    final_policy_group = defaultdict(lambda : [])
+    for _ in range(args.repeat):  # run multiple times.
+        for gr_id in range(gr_num):
             for cv_id in range(cv_num):
-                gr_assign = gr_spliter.gr_assign
-                gr_dist, transform = get_gr_dist(C.get()['dataset'], C.get()['batch'], args.dataroot, cv_id, gr_assign=gr_assign)
-                gr_spliter.transform = transform
-                gr_dist_collector[cv_id].append(gr_dist)
-                print()
-                m = Categorical(gr_dist)
-                gr_ids = m.sample().numpy()
-                print(Counter(gr_ids))
-                for gr_id in range(gr_num):
-                    torch.cuda.empty_cache()
-                    final_policy_set = []
-                    name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
-                    print(name)
-                    # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-                    # wr = csv.writer(bo_log_file)
-                    # wr.writerow(result_to_save)
-                    register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
-                    # print(best_configs[gr_id])
-                    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                                        # points_to_evaluate=best_configs[gr_id])
-                    algo = ConcurrencyLimiter(algo, max_concurrent=torch.cuda.device_count())
-                    experiment_spec = Experiment(
-                        name,
-                        run=name,
-                        num_samples=args.num_search,# if r == args.repeat-1 else 25,
-                        stop={'training_iteration': args.iter},
-                        resources_per_trial={'gpu': 1./num_process_per_gpu},
-                        config={
-                            "dataroot": args.dataroot,
-                            'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
+                final_policy_set = []
+                name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
+                print(name)
+                bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                wr = csv.writer(bo_log_file)
+                wr.writerow(result_to_save)
+                register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
+                algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+                experiment_spec = Experiment(
+                    name,
+                    run=name,
+                    num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                    resources_per_trial={'gpu': 1./num_process_per_gpu},
+                    stop={'training_iteration': args.iter},
+                        'config': {
+                            'dataroot': args.dataroot, 'save_path': paths[cv_id],
+                            'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
                             'num_op': args.num_op, 'num_policy': args.num_policy,
-                            "cv_id": cv_id, "gr_id": gr_id,
-                            "gr_ids": gr_ids
-                        },
-                        local_dir=os.path.join(base_path, "ray_results"),
-                        )
-                    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                    global_checkpoint_period=np.inf)
-                    results = analysis.trials
-                    print()
-                    results = [x for x in results if x.last_result]
-                    results = sorted(results, key=lambda x: x.last_result['timestamp'])
-                    # for res in results:
-                    #     # print(res.last_result)
-                    #     wr.writerow([res.last_result[k] for k in result_to_save])
-                    # bo_log_file.close()
-                    results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-                    # calculate computation usage
-                    for result in results:
-                        total_computation += result.last_result['elapsed_time']
-                    # best_configs[gr_id] = []
-                    for result in results[:num_result_per_cv]:
-                        # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
-                        final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
-                        final_policy = remove_deplicates(final_policy)
-                        logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                            "gr_assign": gr_assign, "gr_id": gr_id
+                    },
+                    local_dir=os.path.join(base_path, "ray_results"),
+                    )
+                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                                global_checkpoint_period=np.inf)
+                results = analysis.trials
+                print()
+                results = [x for x in results if x.last_result]
+                results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                for res in results:
+                    # print(res.last_result)
+                    wr.writerow([res.last_result[k] for k in result_to_save])
+                bo_log_file.close()
+                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+                # calculate computation usage
+                for result in results:
+                    total_computation += result.last_result['elapsed_time']
 
-                        final_policy_set.extend(final_policy)
-                    final_policy_set.reverse()
-                    final_policy_group[gr_id].extend(final_policy_set)
-                    final_policy_group[gr_id] = final_policy_group[gr_id][-args.max_aug:]
+                for result in results[:num_result_per_cv]:
+                    final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                    logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                    final_policy = remove_deplicates(final_policy)
+                    final_policy_set.extend(final_policy)
+                final_policy_group[gr_id].extend(final_policy_set)
+                # probs = []
+                # for aug in final_policy_set:
+                #     for op in aug:
+                #         probs.append(op[1])
+                # prob = sum(probs) / len(probs)
+                # print("mean_prob: {:.2f}".format(prob))
 
-                config = {
-                    'dataroot': args.dataroot, 'load_path': paths[cv_id],
-                    'cv_ratio_test': args.cv_ratio, "cv_id": cv_id,
-                    'max_step': args.g_step
-                }
-                gr_result = gr_spliter.train(final_policy_group, config)
-                gr_results.append(gr_result)
-            torch.save({
-                        "gr_results": gr_results,
-                        "gr_dist_collector": dict(gr_dist_collector),
-                        "final_policy": dict(final_policy_group),
-                        }, base_path+"/search_summary.pt")
-        gr_assign = gr_spliter.gr_assign
-        gr_dist, _ = get_gr_dist(C.get()['test_dataset'], C.get()['batch'], args.dataroot, gr_assign=gr_assign)
-        gr_dist_collector["last"] = gr_dist
-        gr_dist_collector = dict(gr_dist_collector)
-        final_policy_group = dict(final_policy_group)
-        torch.save({
-                    "gr_results": gr_results,
-                    "gr_dist_collector": gr_dist_collector,
-                    "final_policy": final_policy_group,
-                    }, base_path+"/search_summary.pt")
-        del gr_spliter, gr_results, gr_dist_collector, gr_assign
-        logger.info(json.dumps(final_policy_group))
-        logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
-    else:
-        search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
-        search_info = torch.load(search_load_path)
-        final_policy_group = search_info["final_policy"]
-        gr_dist = search_info["gr_dist_collector"]["last"]
-        logger.info(json.dumps(final_policy_group))
-        logger.info("loaded search info from {}".format(search_load_path))
+    logger.info(json.dumps(final_policy_group))
+    logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
-    torch.cuda.empty_cache()
-    bench_policy_group = ori_aug
+    # g0 = fa_reduced_cifar10()
+    # g1 = fa_reduced_svhn()
+    bench_policy_group = C.get()["aug"]
     num_experiments = torch.cuda.device_count() // 2
-    default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
-    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], evaluation_interval=5, gr_dist=gr_dist) for _ in range(num_experiments)] + \
-           [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], evaluation_interval=5, gr_dist=gr_dist) for _ in range(num_experiments)]
+    default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_assign=gr_assign) for _ in range(num_experiments)] + \
+     [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gr_assign) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False
@@ -517,11 +457,10 @@ if __name__ == '__main__':
     logger.info('getting results...')
     final_results = ray.get(reqs)
     # Affinity Calculation
-    gr_ids = torch.max(gr_dist,-1)[1].numpy()
     augment = {
         'dataroot': args.dataroot, 'load_paths': paths,
         'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-        "gr_ids": gr_ids
+        "gr_assign": gr_assign
     }
     bench_affs = get_affinity(bench_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
     aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
@@ -548,6 +487,7 @@ if __name__ == '__main__':
         "bench_affs": bench_affs,
         "bench_divs": bench_divs
     }, base_path+"/summary.pt")
+
     logger.info('processed in %.4f secs' % w.pause('train_aug'))
     logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
     logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
