@@ -30,7 +30,7 @@ from FastAutoAugment.networks import get_model, num_class
 from FastAutoAugment.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 from FastAutoAugment.group_assign import *
-import csv
+import csv, random
 
 top1_valid_by_cv = defaultdict(lambda: list)
 
@@ -68,6 +68,19 @@ gorilla.apply(patch)
 
 
 logger = get_logger('Fast AutoAugment')
+
+def gen_rand_policy(num_policy, num_op):
+    op_list = augment_list(False)
+    policies = []
+    for i in range(num_policy):
+        ops = []
+        for j in range(num_op):
+            op_idx = random.randint(0, len(op_list)-1)
+            op_prob = random.random()
+            op_level = random.random()
+            ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
+        policies.append(ops)
+    return policies
 
 def get_affinity(aug, aff_bases, config, augment):
     C.get()
@@ -283,6 +296,7 @@ if __name__ == '__main__':
     parser.add_argument('--g_step', type=int, default=100)
     parser.add_argument('--max_aug', type=int, default=100)
     parser.add_argument('--load_search', type=str)
+    parser.add_argument('--rand_search', action='store_true')
 
     args = parser.parse_args()
     torch.backends.cudnn.benchmark = True
@@ -393,54 +407,60 @@ if __name__ == '__main__':
                 for gr_id in range(gr_num):
                     torch.cuda.empty_cache()
                     final_policy_set = []
-                    name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
-                    print(name)
-                    # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-                    # wr = csv.writer(bo_log_file)
-                    # wr.writerow(result_to_save)
-                    register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
-                    # print(best_configs[gr_id])
-                    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                                        # points_to_evaluate=best_configs[gr_id])
-                    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
-                    experiment_spec = Experiment(
-                        name,
-                        run=name,
-                        num_samples=args.num_search,# if r == args.repeat-1 else 25,
-                        stop={'training_iteration': args.iter},
-                        resources_per_trial={'gpu': 1./num_process_per_gpu},
-                        config={
-                            "dataroot": args.dataroot,
-                            'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
-                            'num_op': args.num_op, 'num_policy': args.num_policy,
-                            "cv_id": cv_id, "gr_id": gr_id,
-                            "gr_ids": gr_ids
-                        },
-                        local_dir=os.path.join(base_path, "ray_results"),
-                        )
-                    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                    global_checkpoint_period=np.inf)
-                    results = analysis.trials
-                    print()
-                    results = [x for x in results if x.last_result]
-                    results = sorted(results, key=lambda x: x.last_result['timestamp'])
-                    # for res in results:
-                    #     # print(res.last_result)
-                    #     wr.writerow([res.last_result[k] for k in result_to_save])
-                    # bo_log_file.close()
-                    results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-                    # calculate computation usage
-                    for result in results:
-                        total_computation += result.last_result['elapsed_time']
-                    # best_configs[gr_id] = []
-                    for result in results[:num_result_per_cv]:
-                        # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
-                        final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
-                        final_policy = remove_deplicates(final_policy)
-                        logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                    if not args.rand_search:
+                        name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
+                        print(name)
+                        # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                        # wr = csv.writer(bo_log_file)
+                        # wr.writerow(result_to_save)
+                        register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
+                        # print(best_configs[gr_id])
+                        algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+                                            # points_to_evaluate=best_configs[gr_id])
+                        algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+                        experiment_spec = Experiment(
+                            name,
+                            run=name,
+                            num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                            stop={'training_iteration': args.iter},
+                            resources_per_trial={'gpu': 1./num_process_per_gpu},
+                            config={
+                                "dataroot": args.dataroot,
+                                'save_path': paths[cv_id], "cv_ratio_test": args.cv_ratio,
+                                'num_op': args.num_op, 'num_policy': args.num_policy,
+                                "cv_id": cv_id, "gr_id": gr_id,
+                                "gr_ids": gr_ids
+                            },
+                            local_dir=os.path.join(base_path, "ray_results"),
+                            )
+                        analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                                        global_checkpoint_period=np.inf)
+                        results = analysis.trials
+                        print()
+                        results = [x for x in results if x.last_result]
+                        results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                        # for res in results:
+                        #     # print(res.last_result)
+                        #     wr.writerow([res.last_result[k] for k in result_to_save])
+                        # bo_log_file.close()
+                        results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+                        # calculate computation usage
+                        for result in results:
+                            total_computation += result.last_result['elapsed_time']
+                        # best_configs[gr_id] = []
+                        for result in results[:num_result_per_cv]:
+                            # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
+                            final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                            final_policy = remove_deplicates(final_policy)
+                            logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
 
-                        final_policy_set.extend(final_policy)
-                    final_policy_set.reverse()
+                            final_policy_set.extend(final_policy)
+                        final_policy_set.reverse()
+                    else:
+                        for i in range(num_result_per_cv):
+                            final_policy = gen_rand_policy(args.num_policy, args.num_op)
+                            final_policy = remove_deplicates(final_policy)
+                            final_policy_set.extend(final_policy)
                     final_policy_group[gr_id].extend(final_policy_set)
                     final_policy_group[gr_id] = final_policy_group[gr_id][-args.max_aug:]
 
