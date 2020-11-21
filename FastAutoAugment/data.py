@@ -667,9 +667,6 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         for _ in range(split_idx+1):
             train_idx, valid_idx = next(sss)
-        # targets = [total_trainset.targets[idx] for idx in train_idx]
-        # total_trainset = Subset(total_trainset, train_idx)
-        # total_trainset.targets = targets
 
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'cifar100':
@@ -801,6 +798,14 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
                 _, gr_split_idx = next(ps)
             targets = [total_trainset.targets[idx] for idx in gr_split_idx]
             total_trainset = Subset(total_trainset, gr_split_idx)
+            total_trainset.targets = targets
+
+        if train_idx is not None and valid_idx is not None:
+            if dataset in ["svhn", "reduced_svhn"]:
+                targets = [total_trainset.labels[idx] for idx in train_idx]
+            else:
+                targets = [total_trainset.targets[idx] for idx in train_idx]
+            total_trainset = Subset(total_trainset, train_idx)
             total_trainset.targets = targets
 
         if multinode:
