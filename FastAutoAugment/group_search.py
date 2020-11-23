@@ -123,7 +123,7 @@ def get_affinity(aug, aff_bases, config, augment):
             # top1 = accuracy(pred, label, (1, 5))[0].detach().cpu().numpy()
             # correct = top1 * len(data)
             metrics.add_dict({
-                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'loss': np.sum(loss.detach().cpu().numpy()),
                 'correct': np.sum(correct),
                 'cnt': len(data)
             })
@@ -198,12 +198,12 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+            losses_min = np.min(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            corrects_max = np.max(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
-                'minus_loss': -1 * np.sum(losses_min),
+                'loss': np.sum(losses_min),
                 'correct': np.sum(corrects_max),
                 'cnt': corrects_max.size
             })
@@ -214,7 +214,7 @@ def eval_tta(config, augment, reporter):
     del model
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    reporter(loss=metrics['loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
 def eval_tta3(config, augment, reporter):
@@ -254,7 +254,7 @@ def eval_tta3(config, augment, reporter):
         correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
 
         metrics.add_dict({
-            'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+            'loss': np.sum(loss.detach().cpu().numpy()),
             'correct': np.sum(correct),
             'cnt': len(data)
         })
@@ -262,7 +262,7 @@ def eval_tta3(config, augment, reporter):
     del model, loader
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    reporter(loss=metrics['loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
 
@@ -392,7 +392,7 @@ if __name__ == '__main__':
         gr_results = []
         gr_dist_collector = defaultdict(list)
         # best_configs = defaultdict(lambda: None)
-        # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+        # result_to_save = ['timestamp', 'top1_valid', 'loss']
         final_policy_group = defaultdict(lambda : [])
         for r in range(args.repeat):  # run multiple times.
             for cv_id in range(cv_num):
@@ -413,7 +413,7 @@ if __name__ == '__main__':
                         # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
                         # wr = csv.writer(bo_log_file)
                         # wr.writerow(result_to_save)
-                        register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
+                        register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
                         # print(best_configs[gr_id])
                         algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                                             # points_to_evaluate=best_configs[gr_id])
@@ -452,7 +452,7 @@ if __name__ == '__main__':
                             # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
                             final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                             final_policy = remove_deplicates(final_policy)
-                            logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                            logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['loss'], result.last_result['top1_valid'], final_policy))
 
                             final_policy_set.extend(final_policy)
                         final_policy_set.reverse()
