@@ -361,7 +361,7 @@ if __name__ == '__main__':
     for i in range(args.num_policy):
         for j in range(args.num_op):
             space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-            # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+            space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
     num_process_per_gpu = 1#2 if torch.cuda.device_count() == 8 else 3
@@ -376,8 +376,8 @@ if __name__ == '__main__':
             # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
             # wr = csv.writer(bo_log_file)
             # wr.writerow(result_to_save)
-            register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
-            algo = HyperOptSearch(space, metric=reward_attr, mode="min")
+            register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+            algo = HyperOptSearch(space, metric=reward_attr, mode="max")
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
             experiment_spec = Experiment(
