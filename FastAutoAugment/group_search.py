@@ -142,7 +142,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1, max_calls=1)
+@ray.remote(num_gpus=0.5, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
     C.get()
     C.get().conf = config
@@ -198,12 +198,12 @@ def eval_tta(config, augment, reporter):
                 del loss, correct, pred, data, label
 
             losses = np.concatenate(losses)
-            losses_min = np.mean(losses, axis=0).squeeze() # (N,)
+            losses_min = np.min(losses, axis=0).squeeze() # (N,)
 
             corrects = np.concatenate(corrects)
-            corrects_max = np.mean(corrects, axis=0).squeeze() # (N,)
+            corrects_max = np.max(corrects, axis=0).squeeze() # (N,)
             metrics.add_dict({
-                'minus_loss': -1 * np.sum(losses_min),
+                'loss': np.sum(losses_min),
                 'correct': np.sum(corrects_max),
                 'cnt': corrects_max.size
             })
@@ -214,7 +214,7 @@ def eval_tta(config, augment, reporter):
     del model
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    reporter(loss=metrics['loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
 def eval_tta3(config, augment, reporter):
@@ -254,7 +254,7 @@ def eval_tta3(config, augment, reporter):
         correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
 
         metrics.add_dict({
-            'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+            'loss': np.sum(loss.detach().cpu().numpy()),
             'correct': np.sum(correct),
             'cnt': len(data)
         })
@@ -262,7 +262,7 @@ def eval_tta3(config, augment, reporter):
     del model, loader
     metrics = metrics / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(minus_loss=metrics['minus_loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
+    reporter(loss=metrics['loss'], top1_valid=metrics['correct'], elapsed_time=gpu_secs, done=True)
     return metrics['correct']
 
 
@@ -376,7 +376,7 @@ if __name__ == '__main__':
                 space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
                 space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-        num_process_per_gpu = 1
+        num_process_per_gpu = 2
         total_computation = 0
         reward_attr = 'top1_valid'      # top1_valid or minus_loss
         # load childnet for g
@@ -413,11 +413,11 @@ if __name__ == '__main__':
                         # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
                         # wr = csv.writer(bo_log_file)
                         # wr.writerow(result_to_save)
-                        register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
+                        register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
                         # print(best_configs[gr_id])
                         algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                                             # points_to_evaluate=best_configs[gr_id])
-                        algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+                        algo = ConcurrencyLimiter(algo, max_concurrent=13)
                         experiment_spec = Experiment(
                             name,
                             run=name,
@@ -438,7 +438,7 @@ if __name__ == '__main__':
                         results = analysis.trials
                         print()
                         results = [x for x in results if x.last_result]
-                        results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                        # results = sorted(results, key=lambda x: x.last_result['timestamp'])
                         # for res in results:
                         #     # print(res.last_result)
                         #     wr.writerow([res.last_result[k] for k in result_to_save])
@@ -452,7 +452,7 @@ if __name__ == '__main__':
                             # best_configs[gr_id].append({ k: copy.deepcopy(result.config)[k] for k in space })
                             final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
                             final_policy = remove_deplicates(final_policy)
-                            logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                            logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['loss'], result.last_result['top1_valid'], final_policy))
 
                             final_policy_set.extend(final_policy)
                         final_policy_set.reverse()
@@ -500,7 +500,7 @@ if __name__ == '__main__':
     w.start(tag='train_aug')
     torch.cuda.empty_cache()
     bench_policy_group = ori_aug
-    num_experiments = torch.cuda.device_count() // 2
+    num_experiments = torch.cuda.device_count()
     default_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['test_dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], evaluation_interval=5, gr_dist=gr_dist) for _ in range(num_experiments)] + \
