@@ -1,13 +1,15 @@
 import numpy as np
-import copy
+import copy, os, math
 from collections import defaultdict
 from collections.abc import Iterable
 import torch
 from torch import nn, optim
 from torch.distributions import Categorical
 from torchvision.transforms import transforms
-from AdapAug.data import get_dataloaders, CutoutDefault, Augmentation
+from AdapAug.data import get_dataloaders, Augmentation
+from AdapAug.train import run_epoch
 from AdapAug.networks import get_model, num_class
+from warmup_scheduler import GradualWarmupScheduler
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
@@ -19,9 +21,9 @@ class ModelWrapper(nn.Module):
         num_features = feature_extracter_list[-1].num_features # last: bn
         backbone.feature_out = True
         # freeze backbone
-        for name, param in backbone.named_parameters():
-            if param.requires_grad:
-                param.requires_grad = False
+        # for name, param in backbone.named_parameters():
+        #     if param.requires_grad:
+        #         param.requires_grad = False
         self.gr_num = gr_num
         self.num_features = num_features
         self.mode = mode
@@ -45,31 +47,25 @@ class ModelWrapper(nn.Module):
 
 class GrSpliter(object):
     def __init__(self, childnet, gr_num,
-                 ent_w=0.1, eps=1e-3,
-                 eps_clip=0.1, mode="ppo",
-                 eval_step=20
+                 ent_w=0.001, eps=1e-3,
+                 eps_clip=0.2, mode="ppo",
+                 eval_step=100
                  ):
         self.mode = mode
         # self.childnet = childnet
         self.model = nn.DataParallel(ModelWrapper(copy.deepcopy(childnet), gr_num, mode=self.mode)).cuda()
         if self.mode == "supervised":
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
+            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
         else:
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 3e-6, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 0.035, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
         self.eval_step = eval_step
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none').cuda()
+        self.t_loss_fn = torch.nn.CrossEntropyLoss(reduction='mean').cuda()
         self.transform = None
-        # self.transform = transforms.Compose([
-        #     transforms.RandomCrop(32, padding=4),
-        #     transforms.RandomHorizontalFlip(),
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
-        # ])
-        # if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
-        #     self.transform.transforms.append(CutoutDefault(C.get()['cutout']))
+
 
     def gr_assign(self, dataloader):
         # dataloader: just normaized data
@@ -170,8 +166,8 @@ class GrSpliter(object):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 report_number = advantages.mean()
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            self.g_optimizer.step()
+            self.g_optimizer.zero_grad()
             reports.append(float(report_number.cpu().detach()))
             if step % self.eval_step == 0 or step == max_step-1:
                 if self.mode == "supervised":
@@ -182,6 +178,153 @@ class GrSpliter(object):
         C.get()["aug"] = ori_aug
         return reports
 
+    def dual_train(self, policy, config):
+        # train G to maximize TargetNetwork loss
+        g_net = self.model
+        g_net.train()
+        gr_num = g_net.module.gr_num
+        cv_id = config['cv_id']
+        g_step = config["g_step"]
+        len_epoch = config["len_epoch"]
+        save_path = config["save_path"]
+        # TargetNetwork
+        t_net = get_model(C.get()['model'], num_class(C.get()['dataset'])).cuda()
+        if os.path.isfile(save_path):
+            ckpt = torch.load(save_path)
+            t_net.load_state_dict(ckpt['model'])
+            start_epoch = ckpt['epoch']
+            reports = ckpt['reports']
+            policies = ckpt['policies']
+        else:
+            print("Initial step")
+            start_epoch = 1
+            reports = []
+            policies = []
+        policies.append(dict(policy))
+        t_net = nn.DataParallel(t_net).cuda()
+        t_optimizer, t_scheduler = get_optimizer(t_net)
+
+        ori_aug = C.get()["aug"]
+        end_epoch = start_epoch + len_epoch
+        # end_epoch = min(start_epoch + len_epoch, C.get()['epoch']+1)
+        for epoch in range(start_epoch, end_epoch):
+            # train TargetNetwork
+            t_net.train()
+            C.get()["aug"] = policy
+            _, dataloader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, gr_assign=self.gr_assign)
+            metrics = run_epoch(t_net, dataloader, self.t_loss_fn, t_optimizer, desc_default='T-train', epoch=epoch, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False)
+            print(f"[T-train] {epoch}/{end_epoch} {metrics}")
+            # train G
+            t_net.eval()
+            C.get()["aug"] = "clean"
+            _, dataloader, _ , _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0)#, split_idx=cv_id, rand_val=True)
+            for step, (data, label) in enumerate(dataloader):
+                data, label = data.cuda(), label.cuda()
+                # data split
+                logits = g_net(data, label)
+                if self.mode=="supervised":
+                    # get label
+                    with torch.no_grad():
+                        losses = torch.zeros(gr_num, data.size(0)).cuda()
+                        for i in range(gr_num):
+                            aug_data = self.augmentation(data, i*torch.ones(data.size(0)), policy)
+                            losses[i] = self.loss_fn(t_net(aug_data), label)
+                        optimal_gr_ids = losses.max(0)[1]
+                    g_loss = self.t_loss_fn(logits, optimal_gr_ids)
+                    report_number = g_loss
+                else:
+                    m = Categorical(logits)
+                    gr_ids = m.sample()
+                    log_probs = m.log_prob(gr_ids)
+                    entropys = m.entropy()
+                    # Get Advantage - value function
+                    with torch.no_grad():
+                        probs = m.log_prob(torch.tensor([[i] for i in range(gr_num)]).cuda()).exp()
+                        rewards_list = torch.zeros(gr_num, data.size(0)).cuda()
+                        for i in range(gr_num):
+                            aug_data = self.augmentation(data, i*torch.ones_like(gr_ids), policy)
+                            rewards_list[i] = self.loss_fn(t_net(aug_data), label)
+                        rewards = torch.tensor([ rewards_list[gr_id][idx] for idx, gr_id in enumerate(gr_ids)]).cuda().detach()
+                        baselines = sum([ prob*reward for prob, reward in zip(probs, rewards_list) ]) # value function
+                        advantages = rewards - baselines
+                    # G_loss
+                    if self.mode=="reinforce":
+                        g_loss = ( -log_probs * advantages ).mean()
+                    elif self.mode=="ppo":
+                        old_log_probs = log_probs.detach()
+                        gr_ids = m.sample()
+                        log_probs = m.log_prob(gr_ids)
+                        ratios = (log_probs - old_log_probs).exp()
+                        surr1 = ratios * advantages
+                        surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+                        g_loss = -torch.min(surr1, surr2).mean()
+                    g_loss += self.ent_w * entropys.mean()
+                    report_number = advantages.mean()
+                g_loss.backward()
+                torch.nn.utils.clip_grad_norm_(g_net.parameters(), 1.0)
+                self.g_optimizer.step()
+                self.g_optimizer.zero_grad()
+                reports.append(float(report_number.cpu().detach()))
+                if step % self.eval_step == 0 or step == len(dataloader)-1:
+                    if self.mode == "supervised":
+                        entropy = 0.
+                    else:
+                        entropy = (self.ent_w * entropys.mean()).cpu().detach().data
+                    print(f"[epoch{epoch}/{end_epoch} {step}] objective {np.mean(reports[-self.eval_step:]):.4f}, entropy {entropy:.4f}")
+                    # print(f"Max Advantage: {(rewards_list.max(0)[0] - baselines).mean()}")
+        C.get()["aug"] = ori_aug
+        torch.save({
+            'model': t_net.module.state_dict(),
+            'epoch': end_epoch,
+            'reports': reports,
+            'policies': policies
+        }, save_path)
+        return reports
+
+def get_optimizer(model):
+    # optimizer & scheduler
+    if C.get()['optimizer']['type'] == 'sgd':
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=C.get()['lr'],
+            momentum=C.get()['optimizer'].get('momentum', 0.9),
+            weight_decay=0.0,
+            nesterov=C.get()['optimizer'].get('nesterov', True)
+        )
+    elif C.get()['optimizer']['type'] == 'rmsprop':
+        optimizer = RMSpropTF(
+            model.parameters(),
+            lr=C.get()['lr'],
+            weight_decay=0.0,
+            alpha=0.9, momentum=0.9,
+            eps=0.001
+        )
+    else:
+        raise ValueError('invalid optimizer type=%s' % C.get()['optimizer']['type'])
+
+    lr_scheduler_type = C.get()['lr_schedule'].get('type', 'cosine')
+    if lr_scheduler_type == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=C.get()['epoch'], eta_min=0.)
+    elif lr_scheduler_type == 'resnet':
+        scheduler = adjust_learning_rate_resnet(optimizer)
+    elif lr_scheduler_type == 'efficientnet':
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda x: 0.97 ** int((x + C.get()['lr_schedule']['warmup']['epoch']) / 2.4))
+    else:
+        raise ValueError('invalid lr_schduler=%s' % lr_scheduler_type)
+
+    if C.get()['lr_schedule'].get('warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=C.get()['lr_schedule']['warmup']['epoch'],
+            T_mult=C.get()['lr_schedule']['warmup']['multiplier']
+        )
+        # scheduler = GradualWarmupScheduler(
+        #     optimizer,
+        #     multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
+        #     total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
+        #     after_scheduler=scheduler
+        # )
+    return optimizer, scheduler
 
 def gen_assign_group(version, num_group=5):
     if version == 1:
@@ -258,10 +401,6 @@ def assign_group4(data, label=None):
 
 def assign_group5(data, label=None):
     return [0 for _ in label]
-
-class CustomDataParallel(nn.DataParallel):
-    def __getattr__(self, name):
-        return getattr(self.module, name)
 
 class UnNormalize(object):
     def __init__(self, mean=_CIFAR_MEAN, std=_CIFAR_STD):

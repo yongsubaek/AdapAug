@@ -109,7 +109,7 @@ class GrAugCIFAR10(torchvision.datasets.CIFAR10):
         if gr_ids is not None:
             self.gr_ids = gr_ids
         else:
-            self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
+            self.gr_ids = None
 
 
     def __getitem__(self, index):
@@ -149,7 +149,7 @@ class GrAugData(Dataset):
         if gr_ids is not None:
             self.gr_ids = gr_ids
         else:
-            self.gr_ids = self.gr_assign(self.data, self.targets) if self.gr_assign is not None else None
+            self.gr_ids = None
 
     def __len__(self):
         return len(self.data)
@@ -242,13 +242,13 @@ def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_l
     train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         # sss = StratifiedShuffleSplit(n_splits=5, train_size=4000, random_state=0)   # 4000 trainset
@@ -435,13 +435,13 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
     train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=4000, random_state=0)   # 4000 trainset
@@ -654,13 +654,13 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     train_idx = valid_idx = None
     if dataset == 'cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         if isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugCIFAR10(root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=4000, random_state=0)   # 4000 trainset
@@ -753,10 +753,11 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         temp_trainset = copy.deepcopy(total_trainset)
         # temp_trainset.transform = transform_test # just normalize
         temp_loader = torch.utils.data.DataLoader(
-        temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
-        drop_last=False)
+                    temp_trainset, batch_size=batch, shuffle=False, num_workers=4,
+                    drop_last=False)
         gr_dist = gr_assign(temp_loader)
-        gr_ids = torch.max(gr_dist)[1].numpy()
+        gr_ids = torch.max(gr_dist, -1)[1].numpy()
+        total_trainset.gr_ids = gr_ids
 
     if split > 0.0:
         if train_idx is None or valid_idx is None:

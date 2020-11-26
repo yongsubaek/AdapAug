@@ -61,7 +61,6 @@ class GroupAugloader(object):
     def __len__(self):
         return len(self.dataloader)
 
-
 def gr_augment(imgs, gr_ids, gr_policies):
     """
     imgs: unnormalized np.array
@@ -274,7 +273,8 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
                 else:
                     model.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
                 logger.info('optimizer.load_state_dict+')
-                optimizer.load_state_dict(data['optimizer'])
+                if 'optimizer' in data:
+                    optimizer.load_state_dict(data['optimizer'])
                 if data['epoch'] < C.get()['epoch']:
                     epoch_start = data['epoch']
                 else:

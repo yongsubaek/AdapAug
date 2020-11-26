@@ -7,13 +7,13 @@ import torch.backends.cudnn as cudnn
 # from torchvision import models
 import numpy as np
 
-from FastAutoAugment.networks.resnet import ResNet
-from FastAutoAugment.networks.pyramidnet import PyramidNet
-from FastAutoAugment.networks.shakeshake.shake_resnet import ShakeResNet
-from FastAutoAugment.networks.wideresnet import WideResNet
-from FastAutoAugment.networks.shakeshake.shake_resnext import ShakeResNeXt
-from FastAutoAugment.networks.efficientnet_pytorch import EfficientNet, RoutingFn
-from FastAutoAugment.tf_port.tpu_bn import TpuBatchNormalization
+from AdapAug.networks.resnet import ResNet
+from AdapAug.networks.pyramidnet import PyramidNet
+from AdapAug.networks.shakeshake.shake_resnet import ShakeResNet
+from AdapAug.networks.wideresnet import WideResNet
+from AdapAug.networks.shakeshake.shake_resnext import ShakeResNeXt
+from AdapAug.networks.efficientnet_pytorch import EfficientNet, RoutingFn
+from AdapAug.tf_port.tpu_bn import TpuBatchNormalization
 
 
 def get_model(conf, num_class=10, local_rank=-1):
