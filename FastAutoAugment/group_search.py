@@ -123,7 +123,7 @@ def get_affinity(aug, aff_bases, config, augment):
             # top1 = accuracy(pred, label, (1, 5))[0].detach().cpu().numpy()
             # correct = top1 * len(data)
             metrics.add_dict({
-                'minus_loss': -1 * np.sum(loss.detach().cpu().numpy()),
+                'loss': np.sum(loss.detach().cpu().numpy()),
                 'correct': np.sum(correct),
                 'cnt': len(data)
             })
@@ -392,7 +392,7 @@ if __name__ == '__main__':
         gr_results = []
         gr_dist_collector = defaultdict(list)
         # best_configs = defaultdict(lambda: None)
-        # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+        # result_to_save = ['timestamp', 'top1_valid', 'loss']
         final_policy_group = defaultdict(lambda : [])
         for r in range(args.repeat):  # run multiple times.
             for cv_id in range(cv_num):

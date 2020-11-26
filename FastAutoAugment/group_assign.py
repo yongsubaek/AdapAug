@@ -55,7 +55,7 @@ class GrSpliter(object):
         if self.mode == "supervised":
             self.optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
         else:
-            self.optimizer = optim.Adam(self.model.parameters(), lr = 3e-5, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.optimizer = optim.Adam(self.model.parameters(), lr = 3e-6, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
@@ -178,7 +178,7 @@ class GrSpliter(object):
                     entropy = 0.
                 else:
                     entropy = (self.ent_w * entropys.mean()).cpu().detach().data
-                print(f"[step{step}/{max_step}] objective {report_number:.4f}, entropy {entropy:.4f}")
+                print(f"[step{step}/{max_step}] objective {np.mean(reports):.4f}, entropy {entropy:.4f}")
         C.get()["aug"] = ori_aug
         return reports
 
