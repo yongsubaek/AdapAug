@@ -21,13 +21,13 @@ from torchvision import transforms
 from tqdm import tqdm
 from theconf import Config as C, ConfigArgumentParser
 
-from FastAutoAugment.common import get_logger, EMA, add_filehandler
-from FastAutoAugment.data import get_dataloaders, Augmentation, CutoutDefault
-from FastAutoAugment.lr_scheduler import adjust_learning_rate_resnet
-from FastAutoAugment.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth
-from FastAutoAugment.networks import get_model, num_class
-from FastAutoAugment.tf_port.rmsprop import RMSpropTF
-from FastAutoAugment.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
+from AdapAug.common import get_logger, EMA, add_filehandler
+from AdapAug.data import get_dataloaders, Augmentation, CutoutDefault
+from AdapAug.lr_scheduler import adjust_learning_rate_resnet
+from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth
+from AdapAug.networks import get_model, num_class
+from AdapAug.tf_port.rmsprop import RMSpropTF
+from AdapAug.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
 from warmup_scheduler import GradualWarmupScheduler
 import random, numpy as np
 
@@ -245,7 +245,7 @@ def train_and_eval(tag, dataloaders, dataroot, test_ratio=0.0, cv_fold=0, report
         )
 
     if not tag or not is_master:
-        from FastAutoAugment.metrics import SummaryWriterDummy as SummaryWriter
+        from AdapAug.metrics import SummaryWriterDummy as SummaryWriter
         logger.warning('tag not provided, no tensorboard log.')
     else:
         from tensorboardX import SummaryWriter

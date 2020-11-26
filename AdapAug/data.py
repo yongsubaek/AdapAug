@@ -15,11 +15,11 @@ from torchvision.transforms import transforms
 from sklearn.model_selection import StratifiedShuffleSplit, PredefinedSplit
 from theconf import Config as C
 
-from FastAutoAugment.archive import arsaug_policy, autoaug_policy, autoaug_paper_cifar10, fa_reduced_cifar10, fa_reduced_svhn, fa_resnet50_rimagenet
-from FastAutoAugment.augmentations import *
-from FastAutoAugment.common import get_logger
-from FastAutoAugment.imagenet import ImageNet
-from FastAutoAugment.networks.efficientnet_pytorch.model import EfficientNet
+from AdapAug.archive import arsaug_policy, autoaug_policy, autoaug_paper_cifar10, fa_reduced_cifar10, fa_reduced_svhn, fa_resnet50_rimagenet
+from AdapAug.augmentations import *
+from AdapAug.common import get_logger
+from AdapAug.imagenet import ImageNet
+from AdapAug.networks.efficientnet_pytorch.model import EfficientNet
 
 logger = get_logger('Fast AutoAugment')
 logger.setLevel(logging.INFO)

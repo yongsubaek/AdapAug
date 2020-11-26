@@ -20,13 +20,13 @@ from tqdm import tqdm
 from pathlib import Path
 lib_dir = (Path("__file__").parent).resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
-from FastAutoAugment.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
-from FastAutoAugment.augmentations import augment_list
-from FastAutoAugment.common import get_logger, add_filehandler
-from FastAutoAugment.data import get_dataloaders
-from FastAutoAugment.metrics import Accumulator
-from FastAutoAugment.networks import get_model, num_class
-from FastAutoAugment.train import train_and_eval
+from AdapAug.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
+from AdapAug.augmentations import augment_list
+from AdapAug.common import get_logger, add_filehandler
+from AdapAug.data import get_dataloaders
+from AdapAug.metrics import Accumulator
+from AdapAug.networks import get_model, num_class
+from AdapAug.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 import csv, random
 

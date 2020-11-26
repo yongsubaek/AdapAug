@@ -7,7 +7,7 @@ Reference :
 import numpy as np
 import torch
 
-from FastAutoAugment.metrics import CrossEntropyLabelSmooth
+from AdapAug.metrics import CrossEntropyLabelSmooth
 
 
 def mixup(data, targets, alpha):

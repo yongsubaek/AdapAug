@@ -6,8 +6,8 @@ import torch
 from torch import nn, optim
 from torch.distributions import Categorical
 from torchvision.transforms import transforms
-from FastAutoAugment.data import get_dataloaders, CutoutDefault, Augmentation
-from FastAutoAugment.networks import get_model, num_class
+from AdapAug.data import get_dataloaders, CutoutDefault, Augmentation
+from AdapAug.networks import get_model, num_class
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
