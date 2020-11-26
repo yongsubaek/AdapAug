@@ -376,8 +376,8 @@ if __name__ == '__main__':
             # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
             # wr = csv.writer(bo_log_file)
             # wr.writerow(result_to_save)
-            register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
-            algo = HyperOptSearch(space, metric=reward_attr, mode="min")
+            register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+            algo = HyperOptSearch(space, metric=reward_attr, mode="max")
             algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
 
             experiment_spec = Experiment(
