@@ -284,7 +284,7 @@ if __name__ == '__main__':
     parser.add_argument('--per-class', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
-    parser.add_argument('--cv-num', type=int, default=1)
+    parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--exp_name', type=str)
     parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=1)
@@ -361,7 +361,7 @@ if __name__ == '__main__':
     for i in range(args.num_policy):
         for j in range(args.num_op):
             space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-            # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+            space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
             space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
     num_process_per_gpu = 1#2 if torch.cuda.device_count() == 8 else 3
@@ -397,7 +397,7 @@ if __name__ == '__main__':
                             global_checkpoint_period=np.inf)
             results = analysis.trials
             print()
-            results = [x for x in results if x.last_result is not None]
+            results = [x for x in results if x.last_result and reward_attr in x.last_result]
             # results = sorted(results, key=lambda x: x.last_result['timestamp'])
             # for res in results:
             #     wr.writerow([res.last_result[k] for k in result_to_save])

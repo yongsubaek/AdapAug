@@ -293,8 +293,8 @@ if __name__ == '__main__':
     parser.add_argument('--iter', type=int, default=5)
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--mode', type=str, default="ppo")
-    parser.add_argument('--g_step', type=int, default=100)
-    parser.add_argument('--max_aug', type=int, default=100)
+    parser.add_argument('--g_step', type=int, default=57)
+    parser.add_argument('--max_aug', type=int, default=500)
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
 
@@ -437,7 +437,7 @@ if __name__ == '__main__':
                                         global_checkpoint_period=np.inf)
                         results = analysis.trials
                         print()
-                        results = [x for x in results if x.last_result]
+                        results = [x for x in results if x.last_result and reward_attr in x.last_result]
                         results = sorted(results, key=lambda x: x.last_result['timestamp'])
                         # for res in results:
                         #     # print(res.last_result)
