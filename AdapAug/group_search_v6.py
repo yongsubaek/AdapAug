@@ -370,7 +370,7 @@ if __name__ == '__main__':
         for i in range(args.num_policy):
             for j in range(args.num_op):
                 space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-                space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+                # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
                 space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
         num_process_per_gpu = 1
@@ -498,10 +498,10 @@ if __name__ == '__main__':
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     # Benchmark
-    req = train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, evaluation_interval=10, gr_dist=gr_dist)
+    req = train_model.options(num_gpus=torch.cuda.device_count()).remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, evaluation_interval=10, gr_dist=gr_dist)
     r_model, r_cv, r_dict = ray.get(req)
     for k in r_dict:
-        logger.info(k,r_dict[k])
+        logger.info(f"{k}:{r_dict[k]:.4f}")
     # Affinity Calculation
     gr_ids = torch.max(gr_dist,-1)[1].numpy()
     augment = {
@@ -536,8 +536,8 @@ if __name__ == '__main__':
     #     "bench_divs": bench_divs
     # }, base_path+"/summary.pt")
     # logger.info('processed in %.4f secs' % w.pause('train_aug'))
-    # logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
-    # logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
+    logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
+    logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
     # logger.info("bench_div_avg={:.2f}".format(np.mean(bench_divs)))
     # logger.info("aug_div_avg={:.2f}".format(np.mean(aug_divs)))
     logger.info(w)
