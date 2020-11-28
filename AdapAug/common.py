@@ -3,6 +3,7 @@ import logging
 import warnings
 from ray import tune
 from theconf import Config as C
+import torch
 from torch import optim
 
 formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
