@@ -9,6 +9,7 @@ from torchvision.transforms import transforms
 from AdapAug.data import get_dataloaders, Augmentation
 from AdapAug.train import run_epoch
 from AdapAug.networks import get_model, num_class
+from AdapAug.common import get_optimizer
 from warmup_scheduler import GradualWarmupScheduler
 from theconf import Config as C
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
@@ -57,7 +58,7 @@ class GrSpliter(object):
         if self.mode == "supervised":
             self.g_optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
         else:
-            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 0.035, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 0.00035, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
@@ -280,51 +281,6 @@ class GrSpliter(object):
             'policies': policies
         }, save_path)
         return reports
-
-def get_optimizer(model):
-    # optimizer & scheduler
-    if C.get()['optimizer']['type'] == 'sgd':
-        optimizer = optim.SGD(
-            model.parameters(),
-            lr=C.get()['lr'],
-            momentum=C.get()['optimizer'].get('momentum', 0.9),
-            weight_decay=0.0,
-            nesterov=C.get()['optimizer'].get('nesterov', True)
-        )
-    elif C.get()['optimizer']['type'] == 'rmsprop':
-        optimizer = RMSpropTF(
-            model.parameters(),
-            lr=C.get()['lr'],
-            weight_decay=0.0,
-            alpha=0.9, momentum=0.9,
-            eps=0.001
-        )
-    else:
-        raise ValueError('invalid optimizer type=%s' % C.get()['optimizer']['type'])
-
-    lr_scheduler_type = C.get()['lr_schedule'].get('type', 'cosine')
-    if lr_scheduler_type == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=C.get()['epoch'], eta_min=0.)
-    elif lr_scheduler_type == 'resnet':
-        scheduler = adjust_learning_rate_resnet(optimizer)
-    elif lr_scheduler_type == 'efficientnet':
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda x: 0.97 ** int((x + C.get()['lr_schedule']['warmup']['epoch']) / 2.4))
-    else:
-        raise ValueError('invalid lr_schduler=%s' % lr_scheduler_type)
-
-    if C.get()['lr_schedule'].get('warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=C.get()['lr_schedule']['warmup']['epoch'],
-            T_mult=C.get()['lr_schedule']['warmup']['multiplier']
-        )
-        # scheduler = GradualWarmupScheduler(
-        #     optimizer,
-        #     multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
-        #     total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
-        #     after_scheduler=scheduler
-        # )
-    return optimizer, scheduler
 
 def gen_assign_group(version, num_group=5):
     if version == 1:
