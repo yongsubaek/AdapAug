@@ -3,6 +3,7 @@ import logging
 import warnings
 from ray import tune
 from theconf import Config as C
+from torch import optim
 
 formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
 warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
