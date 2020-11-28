@@ -290,6 +290,7 @@ if __name__ == '__main__':
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--g_step', type=int, default=57)
+    parser.add_argument('--g_lr', type=float, default=0.00035)
     parser.add_argument('--max_aug', type=int, default=500)
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
@@ -384,7 +385,7 @@ if __name__ == '__main__':
         else:
             childnet.load_state_dict(ckpt)
         # g definition
-        gr_spliter = GrSpliter(childnet, gr_num=args.gr_num, mode=args.mode)
+        gr_spliter = GrSpliter(childnet, gr_num=args.gr_num, mode=args.mode, g_lr=args.g_lr)
         del childnet, ckpt
         gr_results = []
         gr_dist_collector = defaultdict(list)
@@ -393,7 +394,7 @@ if __name__ == '__main__':
         final_policy_group = defaultdict(lambda : [])
         for r in range(args.repeat):  # run multiple times.
             for cv_id in range(cv_num):
-                s = time.time()
+                _s = time.time()
                 gr_assign = gr_spliter.gr_assign
                 gr_dist, transform = get_gr_dist(C.get()['dataset'], C.get()['batch'], args.dataroot, cv_id, gr_assign=gr_assign)
                 gr_spliter.transform = transform
@@ -402,8 +403,7 @@ if __name__ == '__main__':
                 m = Categorical(gr_dist)
                 gr_ids = m.sample().numpy()
                 print(Counter(gr_ids))
-                e = time.time()
-                print("Data preparation Time {:.2f}".format(e-s))
+                print("Data preparation Time {:.2f}".format(time.time()-_s))
                 for gr_id in range(gr_num):
                     torch.cuda.empty_cache()
                     final_policy_set = []
@@ -413,7 +413,7 @@ if __name__ == '__main__':
                         # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
                         # wr = csv.writer(bo_log_file)
                         # wr.writerow(result_to_save)
-                        register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
+                        register_trainable(name, lambda augs, reporter: eval_tta3(copy.deepcopy(copied_c), augs, reporter))
                         # print(best_configs[gr_id])
                         algo = HyperOptSearch(space, metric=reward_attr, mode="max")
                                             # points_to_evaluate=best_configs[gr_id])
