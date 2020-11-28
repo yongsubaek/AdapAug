@@ -90,7 +90,9 @@ def gr_augment(imgs, gr_ids, gr_policies):
            "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False):
+    if data_parallel:
+        model = DataParallel(model).cuda()
     if verbose:
         loader = tqdm(loader, disable=tqdm_disabled)
         loader.set_description('[%s %04d/%04d]' % (desc_default, epoch, C.get()['epoch']))
