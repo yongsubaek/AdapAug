@@ -282,7 +282,7 @@ class GrSpliter(object):
         C.get()["aug"] = ori_aug
         torch.save({
             'model': t_net.module.state_dict(),
-            'epoch': end_epoch,
+            'epoch': epoch,
             'reports': reports,
             'policies': policies
         }, save_path)

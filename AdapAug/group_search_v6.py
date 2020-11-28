@@ -139,11 +139,11 @@ def _get_path(dataset, model, tag, basemodel=True):
 
 
 @ray.remote(num_gpus=1, max_calls=1)
-def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
+def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None, data_parallel=False):
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
-    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_dist=gr_dist)
+    result = train_and_eval(None, dataloaders, dataroot, cv_ratio_test, cv_id, save_path=save_path, only_eval=skip_exist, evaluation_interval=evaluation_interval, gr_assign=gr_assign, gr_dist=gr_dist, data_parallel=data_parallel)
     return C.get()['model']['type'], cv_id, result
 
 def eval_tta(config, augment, reporter):
@@ -498,7 +498,7 @@ if __name__ == '__main__':
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     # Benchmark
-    req = train_model.options(num_gpus=torch.cuda.device_count()).remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, evaluation_interval=10, gr_dist=gr_dist, data_parallel=True)
+    req = train_model.options(num_gpus=torch.cuda.device_count()).remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, skip_exist=True, evaluation_interval=10, gr_dist=gr_dist, data_parallel=True)
     r_model, r_cv, r_dict = ray.get(req)
     for k in r_dict:
         logger.info(f"{k}:{r_dict[k]:.4f}")
