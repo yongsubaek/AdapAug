@@ -498,7 +498,7 @@ if __name__ == '__main__':
         logger.info("loaded search info from {}".format(search_load_path))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     # Benchmark
-    req = train_model.options(num_gpus=torch.cuda.device_count()).remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, evaluation_interval=10, gr_dist=gr_dist)
+    req = train_model.options(num_gpus=torch.cuda.device_count()).remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=network_path, evaluation_interval=10, gr_dist=gr_dist, data_parallel=True)
     r_model, r_cv, r_dict = ray.get(req)
     for k in r_dict:
         logger.info(f"{k}:{r_dict[k]:.4f}")
