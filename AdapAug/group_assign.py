@@ -1,5 +1,5 @@
 import numpy as np
-import copy, os, math
+import copy, os, math, time
 from collections import defaultdict
 from collections.abc import Iterable
 import torch
@@ -49,15 +49,15 @@ class GrSpliter(object):
     def __init__(self, childnet, gr_num,
                  ent_w=0.001, eps=1e-3,
                  eps_clip=0.2, mode="ppo",
-                 eval_step=100
+                 eval_step=100, g_lr=0.00035
                  ):
         self.mode = mode
         # self.childnet = childnet
         self.model = nn.DataParallel(ModelWrapper(copy.deepcopy(childnet), gr_num, mode=self.mode)).cuda()
         if self.mode == "supervised":
-            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-4)
+            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 5e-4, weight_decay=1e-6)
         else:
-            self.g_optimizer = optim.Adam(self.model.parameters(), lr = 0.035, betas=(0.,0.999), eps=0.001, weight_decay=1e-4)
+            self.g_optimizer = optim.Adam(self.model.parameters(), lr = g_lr, betas=(0.,0.999), eps=0.001, weight_decay=1e-6)
         self.ent_w = ent_w
         self.eps = eps
         self.eps_clip = eps_clip
@@ -205,18 +205,22 @@ class GrSpliter(object):
         t_optimizer, t_scheduler = get_optimizer(t_net)
 
         ori_aug = C.get()["aug"]
-        end_epoch = start_epoch + len_epoch
-        # end_epoch = min(start_epoch + len_epoch, C.get()['epoch']+1)
+        end_epoch = min(start_epoch + len_epoch, C.get()['epoch']+1)
+        total_t_train_time = 0
+        total_g_train_time = 0
         for epoch in range(start_epoch, end_epoch):
             # train TargetNetwork
             t_net.train()
             C.get()["aug"] = policy
+            ts = time.time()
             _, dataloader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, gr_assign=self.gr_assign)
             metrics = run_epoch(t_net, dataloader, self.t_loss_fn, t_optimizer, desc_default='T-train', epoch=epoch, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False)
-            print(f"[T-train] {epoch}/{end_epoch} {metrics}")
+            total_t_train_time += time.time() - ts
+            print(f"[T-train] {epoch}/{end_epoch} (time {total_t_train_time:.1f}) {metrics}")
             # train G
             t_net.eval()
             C.get()["aug"] = "clean"
+            gs = time.time()
             _, dataloader, _ , _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0)#, split_idx=cv_id, rand_val=True)
             for step, (data, label) in enumerate(dataloader):
                 data, label = data.cuda(), label.cuda()
@@ -258,7 +262,7 @@ class GrSpliter(object):
                         surr1 = ratios * advantages
                         surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
                         g_loss = -torch.min(surr1, surr2).mean()
-                    g_loss += self.ent_w * entropys.mean()
+                    g_loss -= self.ent_w * entropys.mean()
                     report_number = advantages.mean()
                 g_loss.backward()
                 torch.nn.utils.clip_grad_norm_(g_net.parameters(), 1.0)
@@ -272,6 +276,8 @@ class GrSpliter(object):
                         entropy = (self.ent_w * entropys.mean()).cpu().detach().data
                     print(f"[epoch{epoch}/{end_epoch} {step}] objective {np.mean(reports[-self.eval_step:]):.4f}, entropy {entropy:.4f}")
                     # print(f"Max Advantage: {(rewards_list.max(0)[0] - baselines).mean()}")
+            total_g_train_time += time.time() - gs
+            print(f"(time {total_g_train_time:.1f})")
         C.get()["aug"] = ori_aug
         torch.save({
             'model': t_net.module.state_dict(),
