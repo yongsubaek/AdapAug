@@ -193,7 +193,7 @@ class GrSpliter(object):
         if os.path.isfile(save_path):
             ckpt = torch.load(save_path)
             t_net.load_state_dict(ckpt['model'])
-            start_epoch = ckpt['epoch']
+            start_epoch = ckpt['epoch'] + 1
             reports = ckpt['reports']
             policies = ckpt['policies']
         else:
@@ -282,7 +282,7 @@ class GrSpliter(object):
         C.get()["aug"] = ori_aug
         torch.save({
             'model': t_net.module.state_dict(),
-            'epoch': epoch,
+            'epoch': end_epoch-1,
             'reports': reports,
             'policies': policies
         }, save_path)
