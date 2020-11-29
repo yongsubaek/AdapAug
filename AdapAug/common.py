@@ -5,6 +5,7 @@ from ray import tune
 from theconf import Config as C
 import torch
 from torch import optim
+from warmup_scheduler import GradualWarmupScheduler
 
 formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
 warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
