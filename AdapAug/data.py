@@ -20,6 +20,7 @@ from AdapAug.augmentations import *
 from AdapAug.common import get_logger
 from AdapAug.imagenet import ImageNet
 from AdapAug.networks.efficientnet_pytorch.model import EfficientNet
+from collections import Counter
 
 logger = get_logger('Fast AutoAugment')
 logger.setLevel(logging.INFO)
@@ -344,7 +345,7 @@ def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_l
         gr_dist = gr_assign(temp_loader)
     return gr_dist, transform_train
 
-def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_ids):
+def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_assign=None, gr_id=None, gr_ids=None, rand_val=False, childaug=None):
     if 'cifar' in dataset or 'svhn' in dataset:
         if "cifar" in dataset:
             _mean, _std = _CIFAR_MEAN, _CIFAR_STD
@@ -426,6 +427,17 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
 
     if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
+
+    if childaug:
+        default_transform = transform_train
+        if childaug == "clean":
+            child_transform = transform_test
+        elif childaug == "nocut" and CutoutDefault in transform_train.transforms:
+            child_transform = copy.deepcopy(transform_train)
+            child_transform.transforms.pop()
+        else: # default
+            child_transform = default_transform
+        transform_train = transform_test
     if C.get()['aug'] == "clean":
         transform_train = transform_test
     elif C.get()['aug'] == "nonorm":
@@ -535,20 +547,24 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
         for _ in range(split_idx+1):
             train_idx, valid_idx = next(sss)
 
-    # filter by group
-    ps = PredefinedSplit(gr_ids)
-    ps = ps.split()
-    for _ in range(gr_id + 1):
-        _, gr_split_idx = next(ps)
-    # train_idx = [idx for idx in train_idx if idx in gr_split_idx]
-    valid_idx = [idx for idx in valid_idx if idx in gr_split_idx]
+    if gr_ids is not None:
+        # filter by group
+        ps = PredefinedSplit(gr_ids)
+        ps = ps.split()
+        for _ in range(gr_id + 1):
+            _, gr_split_idx = next(ps)
+        # train_idx = [idx for idx in train_idx if idx in gr_split_idx]
+        valid_idx = [idx for idx in valid_idx if idx in gr_split_idx]
 
-    # targets = [total_trainset.targets[idx] for idx in gr_split_idx]
-    # total_trainset = Subset(total_trainset, gr_split_idx)
-    # total_trainset.targets = targets
+        # targets = [total_trainset.targets[idx] for idx in gr_split_idx]
+        # total_trainset = Subset(total_trainset, gr_split_idx)
+        # total_trainset.targets = targets
 
     # train_sampler = SubsetRandomSampler(train_idx)
-    valid_sampler = SubsetSampler(valid_idx)
+    if rand_val:
+        valid_sampler = SubsetRandomSampler(valid_idx)
+    else:
+        valid_sampler = SubsetSampler(valid_idx)
 
     # trainloader = torch.utils.data.DataLoader(
     #     total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
@@ -560,7 +576,10 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_id, gr_id
     #     testset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
     #     drop_last=False
     # )
-    return validloader
+    if childaug:
+        return validloader, default_transform, child_transform
+    else:
+        return validloader
 
 
 def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, rand_val=False):
@@ -757,6 +776,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
                     drop_last=False)
         gr_dist = gr_assign(temp_loader)
         gr_ids = torch.max(gr_dist, -1)[1].numpy()
+        print(Counter(gr_ids))
         total_trainset.gr_ids = gr_ids
 
     if split > 0.0:

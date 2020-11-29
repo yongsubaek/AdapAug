@@ -1,14 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 import numpy as np
 
 class Controller(nn.Module):
     def __init__(self,
-                 n_subpolicy=2,
+                 n_subpolicy=5,
                  n_op=2,
+                 emb_size=32,
                  lstm_size=100,
                  operation_types = 15,
                  operation_prob = 11,
@@ -24,6 +24,7 @@ class Controller(nn.Module):
 
         self.n_subpolicy = n_subpolicy
         self.n_op = n_op
+        self.emb_size = emb_size
         self.lstm_size = lstm_size
         self.lstm_num_layers = lstm_num_layers
         self.baseline = baseline
@@ -41,7 +42,7 @@ class Controller(nn.Module):
         self._create_params()
 
     def _create_params(self):
-        self.lstm = nn.LSTM(input_size=self.lstm_size,
+        self.lstm = nn.LSTM(input_size=self.emb_size,
                               hidden_size=self.lstm_size,
                               num_layers=self.lstm_num_layers)
         if self.img_input:
@@ -59,7 +60,7 @@ class Controller(nn.Module):
                 nn.ReLU(),
                 nn.AvgPool2d(2, stride=2),                            # [batch, 64, 2, 2]
                 nn.Flatten(),
-                nn.Linear(64*2*2, self.lstm_size)
+                nn.Linear(64*2*2, self.emb_size)
             )
         else:
             pass
@@ -75,9 +76,11 @@ class Controller(nn.Module):
         self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
         self.m_logit = nn.Linear(self.lstm_size, self._operation_mag  )#, bias=False)
         # Embedded input to LSTM: (class:int)->(lstm input vector)
-        self.o_emb = nn.Embedding(self._operation_types, self.lstm_size)
-        self.p_emb = nn.Embedding(self._operation_prob , self.lstm_size)
-        self.m_emb = nn.Embedding(self._operation_mag  , self.lstm_size)
+        self.o_emb = nn.Embedding(self._operation_types, self.self.emb_size)
+        self.p_emb = nn.Embedding(self._operation_prob , self.self.emb_size)
+        self.m_emb = nn.Embedding(self._operation_mag  , self.self.emb_size)
+
+        self.softmax = nn.Softmax()
 
         self._reset_params()
 
@@ -126,7 +129,7 @@ class Controller(nn.Module):
                 output, self.hidden = self.lstm(inputs, self.hidden)        # [1, batch, lstm_size]
                 output = output.squeeze(0)                      # [batch, lstm_size]
                 logit = self.o_logit(output)                    # [batch, _operation_types]
-                logit = self.softmax_tanh(logit)
+                logit = self.softmax(logit)
                 o_id_dist = Categorical(logits=logit)
                 o_id = o_id_dist.sample()                       # [batch]
                 log_prob = o_id_dist.log_prob(o_id)             # [batch]
@@ -135,24 +138,27 @@ class Controller(nn.Module):
                 entropys.append(entropy)
                 inputs = self.o_emb(o_id)                       # [batch, lstm_size]
                 inputs = inputs.unsqueeze(0)                    # [1, batch, lstm_size]
-                # sample operation probability, p
-                output, self.hidden = self.lstm(inputs, self.hidden)
-                output = output.squeeze(0)
-                logit = self.p_logit(output)
-                logit = self.softmax_tanh(logit)
-                p_id_dist = Categorical(logits=logit)
-                p_id = p_id_dist.sample()
-                log_prob = p_id_dist.log_prob(p_id)
-                entropy = p_id_dist.entropy()
-                log_probs.append(log_prob)
-                entropys.append(entropy)
-                inputs = self.p_emb(p_id)
-                inputs = inputs.unsqueeze(0)
+                if self._operation_prob > 0:
+                    # sample operation probability, p
+                    output, self.hidden = self.lstm(inputs, self.hidden)
+                    output = output.squeeze(0)
+                    logit = self.p_logit(output)
+                    logit = self.softmax(logit)
+                    p_id_dist = Categorical(logits=logit)
+                    p_id = p_id_dist.sample()
+                    log_prob = p_id_dist.log_prob(p_id)
+                    entropy = p_id_dist.entropy()
+                    log_probs.append(log_prob)
+                    entropys.append(entropy)
+                    inputs = self.p_emb(p_id)
+                    inputs = inputs.unsqueeze(0)
+                else:
+                    p_id = 11 * torch.ones_like(o_id).cuda()
                 # sample operation magnitude, m
                 output, self.hidden = self.lstm(inputs, self.hidden)
                 output = output.squeeze(0)
                 logit = self.m_logit(output)
-                logit = self.softmax_tanh(logit)
+                logit = self.softmax(logit)
                 m_id_dist = Categorical(logits=logit)
                 m_id = m_id_dist.sample()
                 log_prob = m_id_dist.log_prob(m_id)
@@ -165,10 +171,10 @@ class Controller(nn.Module):
                 subpolicy.append([o_id.detach().cpu().numpy(), p_id.detach().cpu().numpy(), m_id.detach().cpu().numpy()])
             subpolicies.append(subpolicy)
         sampled_policies = np.array(subpolicies)                    # (np.array) [n_subpolicy, n_op, 3, batch]
-        self.sampled_policies = np.moveaxis(sampled_policies,-1,0)  # (np.array) [batch, n_subpolicy, n_op, 3]
-        self.log_probs = sum(log_probs)                             # (tensor) [batch]
-        self.entropys = sum(entropys)                               # (tensor) [batch]
-        return self.log_probs, self.entropys, self.sampled_policies
+        sampled_policies = np.moveaxis(sampled_policies,-1,0)  # (np.array) [batch, n_subpolicy, n_op, 3]
+        log_probs = sum(log_probs)                             # (tensor) [batch]
+        entropys = sum(entropys)                               # (tensor) [batch]
+        return log_probs, entropys, sampled_policies
 
 class RandAug(object):
     """

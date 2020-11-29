@@ -20,7 +20,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from theconf import Config as C, ConfigArgumentParser
 
-from AdapAug.common import get_logger, EMA, add_filehandler
+from AdapAug.common import get_logger, EMA, add_filehandler, get_optimizer
 from AdapAug.data import get_dataloaders, Augmentation, get_custom_dataloaders, CutoutDefault
 from AdapAug.lr_scheduler import adjust_learning_rate_resnet
 from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth
@@ -32,6 +32,28 @@ import random, numpy as np
 from AdapAug.augmentations import get_augment, augment_list
 from torchvision.utils import save_image
 from AdapAug.archive import fa_reduced_cifar10
+from AdapAug.controller import Controller
+
+logger = get_logger('Adap AutoAugment')
+logger.setLevel(logging.INFO)
+
+
+class ExponentialMovingAverage(object):
+  """Class that maintains an exponential moving average."""
+
+  def __init__(self, momentum):
+    self._numerator   = 0
+    self._denominator = 0
+    self._momentum    = momentum
+
+  def update(self, value):
+    self._numerator = self._momentum * self._numerator + (1 - self._momentum) * value
+    self._denominator = self._momentum * self._denominator + (1 - self._momentum)
+
+  def value(self):
+    """Return the current value of the moving average"""
+    return self._numerator / self._denominator
+
 
 class AdapAugloader(object):
     """
@@ -111,7 +133,7 @@ def save_pic(inputs, aug_inputs, labels, policies, batch_policies, step, verbose
     save_image(inputs, save_path + "{}_ori.png".format(step))
     save_image(aug_inputs, save_path + "{}_aug.png".format(step))
 
-def augment_data(imgs, policys):
+def augment_data(imgs, policys, transform):
     """
     arguments
         imgs: (tensor) [batch, h, w, c]; [(image)->ToTensor->Normalize]
@@ -124,31 +146,14 @@ def augment_data(imgs, policys):
     applied_policy = []
     for img, policy in zip(imgs, policys):
         # policy: (list:list:tuple) [num_policy, n_op, 3]
-        augment = Augmentation(policy)
         pil_img = transforms.ToPILImage()(UnNormalize()(img.cpu()))
+        augment = Augmentation(policy)
         aug_img = augment(pil_img)
         # apply original training/valid transforms
-        transform_ctl = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
-        ])
-        if C.get()['cutout'] > 0:
-            transform_ctl.transforms.append(CutoutDefault(C.get()['cutout']))
-        aug_img = transform_ctl(aug_img)
+        aug_img = transform(aug_img)
         aug_imgs.append(aug_img)
         applied_policy.append(augment.policy)
-        # print("Ori, min {}, max {}".format(img.min().item(), img.max().item()))
-        # print(img)
-        # print("Aug, min {}, max {}".format(aug_img.min().item(), img.max().item()))
-        # print(aug_img)
-        # print(augment.policy)
-        # save_image(img, "img.png")
-        # save_image(aug_img, "aug_img.png")
     aug_imgs = torch.stack(aug_imgs)
-    assert type(aug_imgs) == torch.Tensor and aug_imgs.shape == imgs.shape, \
-           "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
 def batch_policy_decoder(augment): # augment: [batch, num_policy, n_op, 3]
@@ -168,133 +173,174 @@ def batch_policy_decoder(augment): # augment: [batch, num_policy, n_op, 3]
         batch_policies.append(policies)
     return batch_policies # (list:list:list:tuple) [batch, num_policy, n_op, 3]
 
-def train_controller(controller, dataloaders, save_path, ctl_save_path):
+def train_controller(controller, config, load_search=False):
+    ori_aug = C.get()["aug"]
+
     dataset = C.get()['test_dataset']
+    target_path = config['target_path']
+    ctl_save_path = config['ctl_save_path']
+    childnet_paths = config['childnet_paths']
+    mode = config['mode']
+    childaug = config['childaug']
+    eps_clip = 0.1
     ctl_train_steps = 1500
-    ctl_num_aggre = 10
+    ctl_num_aggre = 1
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
-    metrics = Accumulator()
-    cnt = 0
 
     controller.train()
-    test_ratio = 0.
-    _, _, dataloader, _ = dataloaders # validloader
-    optimizer = optim.SGD(
-        controller.parameters(),
-        lr=0.00035,
-        momentum=0.9,
-        weight_decay=0.0,
-        nesterov=True
-    )
-    # optimizer = optim.Adam(controller.parameters(), lr = 0.00035)
-    # create a model & a criterion
-    model = get_model(C.get()['model'], num_class(dataset), local_rank=-1)
-    criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0), reduction="batched_sum").cuda()
-    # load model weights
-    data = torch.load(save_path)
-    key = 'model' if 'model' in data else 'state_dict'
+    c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
+    controller = DataParallel(controller)
 
+    # load childnet weights
+    childnet = get_model(C.get()['model'], num_class(dataset), local_rank=-1)
+    cv_id = 0
+    data = torch.load(childnet_paths[cv_id])
+    key = 'model' if 'model' in data else 'state_dict'
     if 'epoch' not in data:
-        model.load_state_dict(data)
+        childnet.load_state_dict(data)
     else:
         logger.info('checkpoint epoch@%d' % data['epoch'])
-        if not isinstance(model, (DataParallel, DistributedDataParallel)):
-            model.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
+        if not isinstance(childnet, (DataParallel, DistributedDataParallel)):
+            childnet.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
         else:
-            model.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
-    del data
+            childnet.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
+            del data
+    childnet = DataParallel(childnet)
+    childnet.eval()
 
-    model.eval()
-    loader_iter = iter(dataloader) # [(image)->ToTensor->Normalize]
-    baseline = None
-    if os.path.isfile(ctl_save_path):
+    # create a TargetNetwork & a criterion
+    t_net = get_model(C.get()['model'], num_class(dataset), local_rank=-1)
+    t_net.train()
+    t_optimizer, t_scheduler = get_optimizer(t_net)
+    criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0), reduction="batched_sum").cuda()
+    t_net = DataParallel(t_net)
+    metrics = {'affinity': Accumulator(),
+               'diversity':Accumulator()}
+    # load TargetNetwork weights
+    if load_search and os.path.isfile(target_path):
+        data = torch.load(target_path)
+        key = 'model' if 'model' in data else 'state_dict'
+        if 'epoch' not in data:
+            t_net.load_state_dict(data)
+        else:
+            logger.info('checkpoint epoch@%d' % data['epoch'])
+            if not isinstance(t_net, (DataParallel, DistributedDataParallel)):
+                t_net.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
+            else:
+                t_net.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
+                del data
+        t_optimizer.load_state_dict(data['optimizer_state_dict'])
+    # load ctl weights and results
+    if load_search and os.path.isfile(ctl_save_path):
         logger.info('------Controller load------')
         checkpoint = torch.load(ctl_save_path)
-        controller.load_state_dict(checkpoint['ctl_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        cnt = checkpoint['cnt']
-        mean_probs =  checkpoint['mean_probs']
-        accs =  checkpoint['accs']
-        metrics_dict = checkpoint['metrics']
-        metrics.metrics = metrics_dict
-        init_step = checkpoint['step']
+        controller.module.load_state_dict(checkpoint['ctl_state_dict'])
+        c_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        metrics['affinity'].metrics = checkpoint['aff_metrics']
+        metrics['diversity'].metrics = checkpoint['div_metrics']
     else:
         logger.info('------Train Controller from scratch------')
-        mean_probs = []
-        accs = []
-        init_step = 0
-    for step in tqdm(range(init_step+1, ctl_train_steps * ctl_num_aggre + 1)):
-        try:
-            inputs, labels = next(loader_iter)
-        except:
-            loader_iter = iter(dataloader)
-            inputs, labels = next(loader_iter)
-        batch_size = len(labels)
-        inputs, labels = inputs.cuda(), labels.cuda()
-        log_probs, entropys, sampled_policies = controller(inputs)
-        # evaluate model with augmented validation dataset
-        with torch.no_grad():
-            # compare Accuracy before/after augmentation
-            # ori_preds = model(inputs)
-            # ori_top1, ori_top5 = accuracy(ori_preds, labels, (1, 5))
-            batch_policies = batch_policy_decoder(sampled_policies) # (list:list:list:tuple) [batch, num_policy, n_op, 3]
-            aug_inputs, applied_policy = augment_data(inputs, batch_policies)
-            aug_inputs = aug_inputs.cuda()
-            # assert type(aug_inputs) == torch.Tensor, "Augmented Input Type Error: {}".format(type(aug_inputs))
-            preds = model(aug_inputs)
-            model_losses = criterion(preds, labels) # (tensor)[batch]
-            top1, top5 = accuracy(preds, labels, (1, 5))
-            # logger.info("Acc B/A Aug, {:.2f}->{:.2f}".format(ori_top1, top1))
-        # assert model_losses.shape == entropys.shape == log_probs.shape, \
-        #         "[Size miss match] loss: {}, entropy: {}, log_prob: {}".format(model_losses.shape, entropys.shape, log_probs.shape)
-        rewards = -model_losses + ctl_entropy_w * entropys # (tensor)[batch]
-        if baseline is None:
-            baseline = -model_losses.mean() # scalar tensor
-        else:
-            # assert baseline, "len(baseline): {}".format(len(baseline))
-            baseline = baseline - (1 - ctl_ema_weight) * (baseline - rewards.mean().detach())
-        # baseline = 0.
-        loss = -1 * (log_probs * (rewards - baseline)).mean() #scalar tensor
-        # Average gradient over controller_num_aggregate samples
-        loss = loss / ctl_num_aggre
-        loss.backward(retain_graph=True)
-        metrics.add_dict({
-            'loss': loss.item() * batch_size,
-            'top1': top1.item() * batch_size,
-            'top5': top5.item() * batch_size,
-        })
-        cnt += batch_size
-        if (step+1) % ctl_num_aggre == 0:
-            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-            optimizer.step()
-            controller.zero_grad()
-            # torch.cuda.empty_cache()
-            logger.info('\n[Train Controller %03d/%03d] log_prob %02f, %s', step, ctl_train_steps*ctl_num_aggre, \
-            log_probs.mean().item(), metrics / cnt
-            )
-        if step % 100 == 0 or step == ctl_train_steps * ctl_num_aggre:
-            save_pic(inputs, aug_inputs, labels, applied_policy, batch_policies, step)
-            ps = []
-            for pol in batch_policies: # (list:list:list:tuple) [batch, num_policy, n_op, 3]
-                for ops in pol:
-                    for op in ops:
-                        p = op[1]
-                        ps.append(p)
-            mean_prob = np.mean(ps)
-            mean_probs.append(mean_prob)
-            accs.append(top1.item())
-            print("Mean probability: {:.2f}".format(mean_prob))
+    # get dataloaders
+    C.get()["aug"] = "clean"
+    valid_loader, default_transform, child_transform = get_post_dataloader(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, ctl_mode=childaug)
+    C.get()["aug"] = childaug
+    _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0)
+
+    for epoch in range(C.get()['epoch']):
+        for train_type in ['affinity', 'diversity']:
+            loader = valid_loader if 'affinity' else total_loader
+            # 0. Given Target Network
+            baseline = ExponentialMovingAverage(ctl_ema_weight)
+            for step, (inputs, labels) in enumerate(loader):
+                batch_size = len(labels)
+                inputs, labels = inputs.cuda(), labels.cuda()
+                # 1. Policy search
+                log_probs, entropys, sampled_policies = controller(inputs)
+                with torch.no_grad():
+                    # 2. Augment
+                    batch_policies = batch_policy_decoder(sampled_policies) # (list:list:list:tuple) [batch, num_policy, n_op, 3]
+                    aug_inputs, applied_policy = augment_data(inputs, batch_policies, default_transform)
+                    aug_inputs = aug_inputs.cuda()
+                # TODO: childaug != clean
+                if train_type == 'affinity':
+                    # 3. Get affinity(1/loss) with childnet
+                    with torch.no_grad():
+                        aug_preds = childnet(aug_inputs)
+                        aug_loss = criterion(aug_preds, labels) # (tensor)[batch]
+                        top1, top5 = accuracy(aug_preds, labels, (1, 5))
+                        clean_loss = criterion(childnet(inputs), labels) # clean data loss
+                        reward = 1./(clean_loss - aug_loss) # affinity approximation
+                        baseline.update(reward.mean())
+                        advantages = reward - baseline.value()
+                        advantages += ctl_entropy_w * entropys
+                else: # diversity
+                    # 3. TargetNetwork Training
+                    aug_preds = t_net(aug_inputs)
+                    aug_loss = criterion(aug_preds, labels) # (tensor)[batch]
+                    top1, top5 = accuracy(aug_preds, labels, (1, 5))
+                    with torch.no_grad():
+                        clean_loss = criterion(t_net(inputs), labels) # clean data loss
+                        reward = aug_loss - clean_loss # diversity approximation
+                        baseline.update(reward.mean())
+                        advantages = reward - baseline.value()
+                        advantages += ctl_entropy_w * entropys
+                    aug_loss.backward()
+                    t_optimizer.step()
+                    t_optimizer.zero_grad()
+
+                if mode == "reinforce":
+                    pol_loss = -1 * (log_probs * advantages).sum() #scalar tensor
+                elif mode == 'ppo':
+                    old_log_probs = log_probs.detach()
+                    ratios = (log_probs - old_log_probs).exp()
+                    surr1 = ratios * advantages
+                    surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
+                    pol_loss = -torch.min(surr1, surr2).sum()
+                # 4. Train Controller
+                # Average gradient over controller_num_aggregate samples
+                pol_loss = pol_loss / ctl_num_aggre
+                pol_loss.backward(retain_graph=ctl_num_aggre>1)
+                if step % ctl_num_aggre == 0:
+                    torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+                    c_optimizer.step()
+                    controller.zero_grad()
+            metrics[train_type].add_dict({
+                'cnt': batch_size,
+                'acc': top1.item()*batch_size,
+                'pol_loss': pol_loss.item(),
+                'reward': reward.sum().item(),
+                'advantages': advantages.sum().item()
+                })
+        if epoch % 10 == 0 or epoch == C.get()['epoch']-1:
+            cv_id = (cv_id+1) % config['cv_num']
+            data = torch.load(childnet_paths[cv_id])
+            key = 'model' if 'model' in data else 'state_dict'
+            if 'epoch' not in data:
+                childnet.load_state_dict(data)
+            else:
+                if not isinstance(childnet, (DataParallel, DistributedDataParallel)):
+                    childnet.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
+                else:
+                    childnet.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
+                    del data
             torch.save({
-                        'step': step,
+                        'epoch': epoch,
+                        'model':t_net.state_dict(),
+                        'optimizer_state_dict': t_optimizer.state_dict(),
+                        }, target_path)
+            torch.save({
+                        'epoch': epoch,
                         'ctl_state_dict': controller.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'metrics': dict(metrics.metrics),
-                        'cnt': cnt,
-                        'mean_probs': mean_probs,
-                        'accs': accs
+                        'aff_metrics': dict(metrics['affinity'].metrics),
+                        'div_metrics': dict(metrics['diversity'].metrics),
+                        'last_policy': batch_policies
                         }, ctl_save_path)
-    return metrics, None #baseline.item()
+        logger.info(f'\n[Train Controller {epoch+1:03d}/{C.get()['epoch']:03d}] {train_type} {metrics[train_type] / 'cnt'}')
+
+    C.get()["aug"] = ori_aug
+    return metrics
 
 def train_and_eval_ctl(tag, controller, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5):
     """
