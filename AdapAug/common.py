@@ -59,17 +59,17 @@ def get_optimizer(model):
         raise ValueError('invalid lr_schduler=%s' % lr_scheduler_type)
 
     if C.get()['lr_schedule'].get('warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=C.get()['lr_schedule']['warmup']['epoch'],
-            T_mult=C.get()['lr_schedule']['warmup']['multiplier']
-        )
-        # scheduler = GradualWarmupScheduler(
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         #     optimizer,
-        #     multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
-        #     total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
-        #     after_scheduler=scheduler
+        #     T_0=C.get()['lr_schedule']['warmup']['epoch'],
+        #     T_mult=C.get()['lr_schedule']['warmup']['multiplier']
         # )
+        scheduler = GradualWarmupScheduler(
+            optimizer,
+            multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
+            total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
+            after_scheduler=scheduler
+        )
     return optimizer, scheduler
 
 class EMA:
