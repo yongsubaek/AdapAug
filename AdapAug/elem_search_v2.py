@@ -143,7 +143,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=0.5, max_calls=1)
+@ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
     C.get()
     C.get().conf = config
@@ -199,7 +199,6 @@ if __name__ == '__main__':
     ray.init(address=args.redis)
 
     num_result_per_cv = args.rpc
-    gr_num = args.gr_num
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     bench_policy_set = C.get()["aug"]
@@ -261,19 +260,20 @@ if __name__ == '__main__':
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
-            'childaug': args.childaug, 'cv_num': args.cv_num
+            'childaug': args.childaug, 'cv_num': cv_num,
             'mode': args.mode, 'c_lr': args.c_lr
     }
-    metrics = train_controller(controller, ctl_config, args.load_search)
-
+    trace, t_net = train_controller(controller, ctl_config, args.load_search)
+    # test t_net
     logger.info('getting results...')
+    for k in trace:
+        logger.info(f"{k}\n{json.dumps(trace[k].trace)}")
+
     # Affinity Calculation
-    augment = {
-        'dataroot': args.dataroot, 'load_paths': paths,
-        'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-    }
-    for k in metrics:
-        logger.info(json.dumps(metrics.metrics))
+    # augment = {
+    #     'dataroot': args.dataroot, 'load_paths': paths,
+    #     'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
+    # }
     # bench_affs = get_affinity(bench_policy_set, aff_bases, copy.deepcopy(copied_c), augment)
     # aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
     # # Diversity calculation

@@ -6,6 +6,47 @@ from collections import defaultdict
 
 from torch import nn
 
+class Tracker:
+    def __init__(self):
+        self.trace = defaultdict(lambda: [])
+        self.accum = Accumulator()
+
+    def add(self, key, value):
+        self.trace[key].append(value)
+        self.accum.add(key, value)
+
+    def add_dict(self, dict):
+        for key, value in dict.items():
+            self.add(key, value)
+
+    def __getitem__(self, item):
+        return self.trace[item]
+
+    def __setitem__(self, key, value):
+        self.trace[key] = value
+
+    def get_dict(self):
+        return copy.deepcopy(dict(self.trace))
+
+    def reset_accum(self):
+        self.accum = Accumulator()
+        return self.accum
+
+    def items(self):
+        return self.accum.items()
+
+    def __str__(self):
+        repr = ""
+        for k, v in self.items():
+            if type(v) in [str, int]:
+                repr += f"{k}: {v:d}\t"
+            else:
+                repr += f"{k}: {v:.4f}\t"
+        return repr
+
+    def __truediv__(self, other):
+        return self.accum / other
+
 
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
@@ -50,7 +91,7 @@ class CrossEntropyLabelSmooth(torch.nn.Module):
 
 class Accumulator:
     def __init__(self):
-        self.metrics = defaultdict(lambda: 0.)
+        self.metrics = defaultdict(lambda: 0)
 
     def add(self, key, value):
         self.metrics[key] += value
@@ -72,16 +113,23 @@ class Accumulator:
         return self.metrics.items()
 
     def __str__(self):
-        return str(dict(self.metrics))
+        # return str(dict(self.metrics))
+        repr = ""
+        for k, v in dict(self.metrics).items():
+            if type(v) in [str, int]:
+                repr += f"{k}: {v:d} "
+            else:
+                repr += f"{k}: {v:.4f} "
+        return repr
 
     def __truediv__(self, other):
         newone = Accumulator()
         for key, value in self.items():
             if isinstance(other, str):
-                if other != key:
-                    newone[key] = value / self[other]
-                else:
+                if other == key or key in ['time']:
                     newone[key] = value
+                else:
+                    newone[key] = value / self[other]
             else:
                 newone[key] = value / other
         return newone

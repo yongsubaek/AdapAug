@@ -6,7 +6,7 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent.absolute()))
 import itertools
 import json
 import logging
-import math
+import math, time
 import os
 from collections import OrderedDict
 
@@ -21,9 +21,9 @@ from tqdm import tqdm
 from theconf import Config as C, ConfigArgumentParser
 
 from AdapAug.common import get_logger, EMA, add_filehandler, get_optimizer
-from AdapAug.data import get_dataloaders, Augmentation, get_custom_dataloaders, CutoutDefault
+from AdapAug.data import get_dataloaders, get_post_dataloader, Augmentation, CutoutDefault
 from AdapAug.lr_scheduler import adjust_learning_rate_resnet
-from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth
+from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth, Tracker
 from AdapAug.networks import get_model, num_class
 from AdapAug.tf_port.rmsprop import RMSpropTF
 from AdapAug.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
@@ -36,7 +36,8 @@ from AdapAug.controller import Controller
 
 logger = get_logger('Adap AutoAugment')
 logger.setLevel(logging.INFO)
-
+_CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+_SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
 class ExponentialMovingAverage(object):
   """Class that maintains an exponential moving average."""
@@ -142,11 +143,15 @@ def augment_data(imgs, policys, transform):
         aug_imgs: (tensor) [batch, h, w, c];
         [(image)->(policys)->RandomResizedCrop->RandomHorizontalFlip->ToTensor->Normalize->CutOut]
     """
+    if "cifar" in C.get()['dataset']:
+        mean, std = _CIFAR_MEAN, _CIFAR_STD
+    elif "svhn" in C.get()['dataset']:
+        mean, std = _SVHN_MEAN, _SVHN_STD
     aug_imgs = []
     applied_policy = []
     for img, policy in zip(imgs, policys):
         # policy: (list:list:tuple) [num_policy, n_op, 3]
-        pil_img = transforms.ToPILImage()(UnNormalize()(img.cpu()))
+        pil_img = transforms.ToPILImage()(UnNormalize(mean, std)(img.cpu()))
         augment = Augmentation(policy)
         aug_img = augment(pil_img)
         # apply original training/valid transforms
@@ -167,7 +172,7 @@ def batch_policy_decoder(augment): # augment: [batch, num_policy, n_op, 3]
                 op_idx, op_prob, op_level = op
                 op_prob = op_prob / 10.
                 op_level = op_level / 10.0 + 0.1
-                assert (0.0 <= op_prob <= 1.0) and (0.0 <= op_level <= 1.0), err_txt
+                # assert (0.0 <= op_prob <= 1.0) and (0.0 <= op_level <= 1.0), f"prob {op_prob}, level {op_level}"
                 ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
             policies.append(ops)
         batch_policies.append(policies)
@@ -183,14 +188,14 @@ def train_controller(controller, config, load_search=False):
     mode = config['mode']
     childaug = config['childaug']
     eps_clip = 0.1
-    ctl_train_steps = 1500
+    # ctl_train_steps = 1500
     ctl_num_aggre = 1
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
 
     controller.train()
     c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
-    controller = DataParallel(controller)
+    controller = DataParallel(controller).cuda()
 
     # load childnet weights
     childnet = get_model(C.get()['model'], num_class(dataset), local_rank=-1)
@@ -206,17 +211,21 @@ def train_controller(controller, config, load_search=False):
         else:
             childnet.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
             del data
-    childnet = DataParallel(childnet)
+    childnet = DataParallel(childnet).cuda()
     childnet.eval()
 
-    # create a TargetNetwork & a criterion
+    # create a TargetNetwork
     t_net = get_model(C.get()['model'], num_class(dataset), local_rank=-1)
-    t_net.train()
     t_optimizer, t_scheduler = get_optimizer(t_net)
+    wd = C.get()['optimizer']['decay']
+    grad_clip = C.get()['optimizer'].get('clip', 5.0)
+    params_without_bn = [params for name, params in t_net.named_parameters() if not ('_bn' in name or '.bn' in name)]
     criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0), reduction="batched_sum").cuda()
-    t_net = DataParallel(t_net)
-    metrics = {'affinity': Accumulator(),
-               'diversity':Accumulator()}
+    t_net = DataParallel(t_net).cuda()
+
+    trace = {'affinity': Tracker(),
+               'diversity': Tracker(),
+               'test': Tracker()}
     # load TargetNetwork weights
     if load_search and os.path.isfile(target_path):
         data = torch.load(target_path)
@@ -237,24 +246,28 @@ def train_controller(controller, config, load_search=False):
         checkpoint = torch.load(ctl_save_path)
         controller.module.load_state_dict(checkpoint['ctl_state_dict'])
         c_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        metrics['affinity'].metrics = checkpoint['aff_metrics']
-        metrics['diversity'].metrics = checkpoint['div_metrics']
+        trace['affinity'].trace = checkpoint['aff_trace']
+        trace['diversity'].trace = checkpoint['div_trace']
+        trace['test'].trace = checkpoint['test_trace']
     else:
         logger.info('------Train Controller from scratch------')
     # get dataloaders
     C.get()["aug"] = "clean"
-    valid_loader, default_transform, child_transform = get_post_dataloader(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, ctl_mode=childaug)
+    valid_loader, default_transform, child_transform = get_post_dataloader(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, childaug=childaug)
     C.get()["aug"] = childaug
-    _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0)
+    _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0)
 
     for epoch in range(C.get()['epoch']):
+        t_net.train()
         for train_type in ['affinity', 'diversity']:
-            loader = valid_loader if 'affinity' else total_loader
+            loader = valid_loader if train_type == 'affinity' else total_loader
+            # print(len(loader))
             # 0. Given Target Network
             baseline = ExponentialMovingAverage(ctl_ema_weight)
             for step, (inputs, labels) in enumerate(loader):
                 batch_size = len(labels)
                 inputs, labels = inputs.cuda(), labels.cuda()
+                st = time.time()
                 # 1. Policy search
                 log_probs, entropys, sampled_policies = controller(inputs)
                 with torch.no_grad():
@@ -270,7 +283,7 @@ def train_controller(controller, config, load_search=False):
                         aug_loss = criterion(aug_preds, labels) # (tensor)[batch]
                         top1, top5 = accuracy(aug_preds, labels, (1, 5))
                         clean_loss = criterion(childnet(inputs), labels) # clean data loss
-                        reward = 1./(clean_loss - aug_loss) # affinity approximation
+                        reward = 0.1/(aug_loss - clean_loss + 1e-3) # affinity approximation
                         baseline.update(reward.mean())
                         advantages = reward - baseline.value()
                         advantages += ctl_entropy_w * entropys
@@ -285,7 +298,11 @@ def train_controller(controller, config, load_search=False):
                         baseline.update(reward.mean())
                         advantages = reward - baseline.value()
                         advantages += ctl_entropy_w * entropys
-                    aug_loss.backward()
+                    t_loss = aug_loss.mean()
+                    t_loss += wd * (1. / 2.) * sum([torch.sum(p ** 2) for p in params_without_bn])
+                    t_loss.backward()
+                    if grad_clip > 0:
+                        nn.utils.clip_grad_norm_(t_net.parameters(), grad_clip)
                     t_optimizer.step()
                     t_optimizer.zero_grad()
 
@@ -302,17 +319,34 @@ def train_controller(controller, config, load_search=False):
                 pol_loss = pol_loss / ctl_num_aggre
                 pol_loss.backward(retain_graph=ctl_num_aggre>1)
                 if step % ctl_num_aggre == 0:
-                    torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+                    torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
                     c_optimizer.step()
-                    controller.zero_grad()
-            metrics[train_type].add_dict({
-                'cnt': batch_size,
-                'acc': top1.item()*batch_size,
-                'pol_loss': pol_loss.item(),
-                'reward': reward.sum().item(),
-                'advantages': advantages.sum().item()
+                    c_optimizer.zero_grad()
+                trace[train_type].add_dict({
+                    'cnt': batch_size,
+                    'time': time.time()-st,
+                    'acc': top1.cpu().detach().item()*batch_size,
+                    'pol_loss': pol_loss.cpu().detach().item(),
+                    'reward': reward.sum().cpu().detach().item(),
+                    'advantages': advantages.sum().cpu().detach().item()
+                    })
+                # print(f"{trace[train_type] / 'cnt'}")
+            logger.info(f"\n[Train Controller {epoch+1:3d}/{C.get()['epoch']:3d}] ({train_type}) {trace[train_type] / 'cnt'}")
+        if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
+            for data, label in test_loader:
+                _batch_size = len(data)
+                data, label = data.cuda(), label.cuda()
+                pred = t_net(data)
+                loss = criterion(pred, label).sum()
+                top1, top5 = accuracy(pred, label, (1,5))
+                trace['test'].add_dict({
+                    'cnt': _batch_size,
+                    'loss': loss.detach().cpu().item(),
+                    'top1': top1.detach().cpu().item()*_batch_size,
+                    'top5': top5.detach().cpu().item()*_batch_size,
                 })
-        if epoch % 10 == 0 or epoch == C.get()['epoch']-1:
+            logger.info(f"\n[Test T {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['test'] / 'cnt'}")
+            # update cv_id
             cv_id = (cv_id+1) % config['cv_num']
             data = torch.load(childnet_paths[cv_id])
             key = 'model' if 'model' in data else 'state_dict'
@@ -332,15 +366,16 @@ def train_controller(controller, config, load_search=False):
             torch.save({
                         'epoch': epoch,
                         'ctl_state_dict': controller.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'aff_metrics': dict(metrics['affinity'].metrics),
-                        'div_metrics': dict(metrics['diversity'].metrics),
+                        'optimizer_state_dict': c_optimizer.state_dict(),
+                        'aff_trace': dict(trace['affinity'].trace),
+                        'div_trace': dict(trace['diversity'].trace),
                         'last_policy': batch_policies
                         }, ctl_save_path)
-        logger.info(f'\n[Train Controller {epoch+1:03d}/{C.get()['epoch']:03d}] {train_type} {metrics[train_type] / 'cnt'}')
+        for k in trace:
+            trace[k].reset_accum()
 
     C.get()["aug"] = ori_aug
-    return metrics
+    return trace, t_net
 
 def train_and_eval_ctl(tag, controller, dataroot, test_ratio=0.0, cv_fold=0, reporter=None, metric='last', save_path=None, only_eval=False, local_rank=-1, evaluation_interval=5):
     """

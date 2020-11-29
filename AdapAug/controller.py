@@ -76,11 +76,11 @@ class Controller(nn.Module):
         self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
         self.m_logit = nn.Linear(self.lstm_size, self._operation_mag  )#, bias=False)
         # Embedded input to LSTM: (class:int)->(lstm input vector)
-        self.o_emb = nn.Embedding(self._operation_types, self.self.emb_size)
-        self.p_emb = nn.Embedding(self._operation_prob , self.self.emb_size)
-        self.m_emb = nn.Embedding(self._operation_mag  , self.self.emb_size)
+        self.o_emb = nn.Embedding(self._operation_types, self.emb_size)
+        self.p_emb = nn.Embedding(self._operation_prob , self.emb_size)
+        self.m_emb = nn.Embedding(self._operation_mag  , self.emb_size)
 
-        self.softmax = nn.Softmax()
+        self.softmax = nn.Softmax(dim=1)
 
         self._reset_params()
 
@@ -129,7 +129,7 @@ class Controller(nn.Module):
                 output, self.hidden = self.lstm(inputs, self.hidden)        # [1, batch, lstm_size]
                 output = output.squeeze(0)                      # [batch, lstm_size]
                 logit = self.o_logit(output)                    # [batch, _operation_types]
-                logit = self.softmax(logit)
+                logit = self.softmax_tanh(logit)
                 o_id_dist = Categorical(logits=logit)
                 o_id = o_id_dist.sample()                       # [batch]
                 log_prob = o_id_dist.log_prob(o_id)             # [batch]
@@ -143,7 +143,7 @@ class Controller(nn.Module):
                     output, self.hidden = self.lstm(inputs, self.hidden)
                     output = output.squeeze(0)
                     logit = self.p_logit(output)
-                    logit = self.softmax(logit)
+                    logit = self.softmax_tanh(logit)
                     p_id_dist = Categorical(logits=logit)
                     p_id = p_id_dist.sample()
                     log_prob = p_id_dist.log_prob(p_id)
@@ -153,12 +153,12 @@ class Controller(nn.Module):
                     inputs = self.p_emb(p_id)
                     inputs = inputs.unsqueeze(0)
                 else:
-                    p_id = 11 * torch.ones_like(o_id).cuda()
+                    p_id = 10 * torch.ones_like(o_id).cuda()
                 # sample operation magnitude, m
                 output, self.hidden = self.lstm(inputs, self.hidden)
                 output = output.squeeze(0)
                 logit = self.m_logit(output)
-                logit = self.softmax(logit)
+                logit = self.softmax_tanh(logit)
                 m_id_dist = Categorical(logits=logit)
                 m_id = m_id_dist.sample()
                 log_prob = m_id_dist.log_prob(m_id)
@@ -167,11 +167,10 @@ class Controller(nn.Module):
                 entropys.append(entropy)
                 inputs = self.m_emb(m_id)
                 inputs = inputs.unsqueeze(0)
-
                 subpolicy.append([o_id.detach().cpu().numpy(), p_id.detach().cpu().numpy(), m_id.detach().cpu().numpy()])
             subpolicies.append(subpolicy)
         sampled_policies = np.array(subpolicies)                    # (np.array) [n_subpolicy, n_op, 3, batch]
-        sampled_policies = np.moveaxis(sampled_policies,-1,0)  # (np.array) [batch, n_subpolicy, n_op, 3]
+        sampled_policies = torch.from_numpy(np.moveaxis(sampled_policies,-1,0)).cuda()  # (np.array) [batch, n_subpolicy, n_op, 3]
         log_probs = sum(log_probs)                             # (tensor) [batch]
         entropys = sum(entropys)                               # (tensor) [batch]
         return log_probs, entropys, sampled_policies
