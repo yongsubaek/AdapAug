@@ -8,14 +8,7 @@ import torch
 from torch.distributions import Categorical
 import numpy as np
 from hyperopt import hp
-import ray
-import gorilla
-from ray import tune
-from ray.tune.trial import Trial
-from ray.tune.trial_runner import TrialRunner
-from ray.tune.suggest.hyperopt import HyperOptSearch
-from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune import register_trainable, run_experiments, run, Experiment
+# import ray
 from tqdm import tqdm
 
 from pathlib import Path
@@ -30,7 +23,7 @@ from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 from AdapAug.controller import Controller
-from AdapAug.train_ctl import train_controller
+from AdapAug.train_ctl import *
 import csv, random
 
 top1_valid_by_cv = defaultdict(lambda: list)
@@ -44,31 +37,7 @@ def save_res(iter, acc, best, term):
     wr.writerow([iter, acc, best, term])
     f.close()
 
-def step_w_log(self):
-    original = gorilla.get_original_attribute(ray.tune.trial_runner.TrialRunner, 'step')
-
-    # log
-    cnts = OrderedDict()
-    for status in [Trial.RUNNING, Trial.TERMINATED, Trial.PENDING, Trial.PAUSED, Trial.ERROR]:
-        cnt = len(list(filter(lambda x: x.status == status, self._trials)))
-        cnts[status] = cnt
-    best_top1_acc = 0.
-    # last_acc = 0.
-    for trial in filter(lambda x: x.status == Trial.TERMINATED, self._trials):
-        if not trial.last_result:
-            continue
-        best_top1_acc = max(best_top1_acc, trial.last_result['top1_valid'])
-        # last_acc = trial.last_result['top1_valid']
-    # save_res(self._iteration, last_acc, best_top1_acc, cnts[Trial.TERMINATED])
-    print('iter', self._iteration, 'top1_acc=%.3f' % best_top1_acc, cnts, end='\r')
-    return original(self)
-
-
-patch = gorilla.Patch(ray.tune.trial_runner.TrialRunner, 'step', step_w_log, settings=gorilla.Settings(allow_hit=True))
-gorilla.apply(patch)
-
-
-logger = get_logger('Fast AutoAugment')
+logger = get_logger('Adap AutoAugment')
 
 def gen_rand_policy(num_policy, num_op):
     op_list = augment_list(False)
@@ -142,8 +111,17 @@ def _get_path(dataset, model, tag, basemodel=True):
     os.makedirs(base_path, exist_ok=True)
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
+# @ray.remote(num_gpus=1)
+def eval_controller(config, controller, dataroot, cv_ratio=0., cv_fold=0, save_path=None, skip_exist=False):
+    """
+    training with augmented data and test with pure data
+    """
+    C.get()
+    C.get().conf = config
+    result = train_and_eval_ctl(None, controller, dataroot, test_ratio=cv_ratio, cv_fold=cv_fold, save_path=save_path, only_eval=skip_exist)
+    return C.get()['model']['type'], cv_fold, result
 
-@ray.remote(num_gpus=1, max_calls=1)
+# @ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
     C.get()
     C.get().conf = config
@@ -196,7 +174,7 @@ if __name__ == '__main__':
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     logger.info('initialize ray...')
-    ray.init(address=args.redis)
+    # ray.init(address=args.redis)
 
     num_result_per_cv = args.rpc
     cv_num = args.cv_num
@@ -211,45 +189,45 @@ if __name__ == '__main__':
     w.start(tag='train_no_aug')
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
-    reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
-        for i in range(cv_num)]
-
-    tqdm_epoch = tqdm(range(C.get()['epoch']))
-    is_done = False
-    for epoch in tqdm_epoch:
-        while True:
-            epochs_per_cv = OrderedDict()
-            for cv_idx in range(cv_num):
-                try:
-                    latest_ckpt = torch.load(paths[cv_idx])
-                    if 'epoch' not in latest_ckpt:
-                        epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
-                        continue
-                    epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
-                except Exception as e:
-                    continue
-            tqdm_epoch.set_postfix(epochs_per_cv)
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
-                is_done = True
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
-                break
-            time.sleep(10)
-        if is_done:
-            break
-
-    logger.info('getting results...')
-    pretrain_results = ray.get(reqs)
-    aff_bases = []
-    for r_model, r_cv, r_dict in pretrain_results:
-        logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
-        # for Affinity calculation
-        aff_bases.append(r_dict['top1_valid'])
-        del r_model, r_cv, r_dict
-    logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
-    if args.until == 1:
-        sys.exit(0)
-    del latest_ckpt, pretrain_results, reqs
+    # reqs = [
+    #     train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
+    #     for i in range(cv_num)]
+    #
+    # tqdm_epoch = tqdm(range(C.get()['epoch']))
+    # is_done = False
+    # for epoch in tqdm_epoch:
+    #     while True:
+    #         epochs_per_cv = OrderedDict()
+    #         for cv_idx in range(cv_num):
+    #             try:
+    #                 latest_ckpt = torch.load(paths[cv_idx])
+    #                 if 'epoch' not in latest_ckpt:
+    #                     epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
+    #                     continue
+    #                 epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
+    #             except Exception as e:
+    #                 continue
+    #         tqdm_epoch.set_postfix(epochs_per_cv)
+    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+    #             is_done = True
+    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+    #             break
+    #         time.sleep(10)
+    #     if is_done:
+    #         break
+    # logger.info('getting results...')
+    # pretrain_results = ray.get(reqs)
+    # aff_bases = []
+    # for r_model, r_cv, r_dict in pretrain_results:
+    #     logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+    #     # for Affinity calculation
+    #     aff_bases.append(r_dict['top1_valid'])
+    #     del r_model, r_cv, r_dict
+    # logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
+    # if args.until == 1:
+    #     sys.exit(0)
+    # del latest_ckpt, pretrain_results, reqs
+    # ray.shutdown()
     logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search-g_train')
     ops = augment_list(False)
@@ -258,16 +236,23 @@ if __name__ == '__main__':
     controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size,
                             operation_prob=0).cuda()
     ctl_config = {
-            'dataroot': args.dataroot, 'split_ratio': args.cv_ratio,
+            'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
             'childaug': args.childaug, 'cv_num': cv_num,
             'mode': args.mode, 'c_lr': args.c_lr
     }
-    trace, t_net = train_controller(controller, ctl_config, args.load_search)
+    if args.version == 2:
+        train_ctl = train_controller2
+    elif args.version == 3:
+        train_ctl = train_controller3
+    else:
+        train_ctl = train_controller
+
+    trace, t_net = train_ctl(controller, ctl_config)
     # test t_net
     logger.info('getting results...')
     for k in trace:
-        logger.info(f"{k}\n{json.dumps(trace[k].trace)}")
+        logger.info(f"{k}\n{json.dumps(trace[k] / 'cnt')}")
 
     # Affinity Calculation
     # augment = {

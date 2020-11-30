@@ -3,7 +3,7 @@ import copy
 import torch
 import numpy as np
 from collections import defaultdict
-
+from collections.abc import Iterable
 from torch import nn
 
 class Tracker:
@@ -13,7 +13,8 @@ class Tracker:
 
     def add(self, key, value):
         self.trace[key].append(value)
-        self.accum.add(key, value)
+        if not isinstance(value, Iterable):
+            self.accum.add(key, value)
 
     def add_dict(self, dict):
         for key, value in dict.items():

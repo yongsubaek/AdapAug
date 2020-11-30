@@ -24,12 +24,12 @@ from theconf import Config as C, ConfigArgumentParser
 from AdapAug.common import get_logger, EMA, add_filehandler
 from AdapAug.data import get_dataloaders, Augmentation, CutoutDefault
 from AdapAug.lr_scheduler import adjust_learning_rate_resnet
-from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth
+from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth, Tracker
 from AdapAug.networks import get_model, num_class
 from AdapAug.tf_port.rmsprop import RMSpropTF
 from AdapAug.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
 from warmup_scheduler import GradualWarmupScheduler
-import random, numpy as np
+import random, copy, numpy as np
 
 
 logger = get_logger('Fast AutoAugment')
@@ -90,7 +90,7 @@ def gr_augment(imgs, gr_ids, gr_policies):
            "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False):
     if data_parallel:
         model = DataParallel(model).cuda()
     if verbose:
@@ -101,11 +101,15 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
     loss_ema = None
     metrics = Accumulator()
+    if trace:
+        tracker = Tracker()
     cnt = 0
     total_steps = len(loader)
     steps = 0
     for data, label in loader:
         steps += 1
+        if trace:
+            data, clean_data, log_prob, policy = data
         data, label = data.cuda(), label.cuda()
 
         if C.get().conf.get('mixup', 0.0) <= 0.0 or optimizer is None:
@@ -118,6 +122,9 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             del shuffled_targets, lam
 
         if optimizer:
+            if trace:
+                _loss = loss.detach().cpu()
+                loss = loss.mean()
             loss += wd * (1. / 2.) * sum([torch.sum(p ** 2) for p in params_without_bn])
             loss.backward()
             grad_clip = C.get()['optimizer'].get('clip', 5.0)
@@ -136,6 +143,15 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             'top5': top5.item() * len(data),
         })
         cnt += len(data)
+        if trace:
+            tracker.add_dict({
+                'cnt': len(data),
+                'clean_data': (clean_data, label.detach().cpu()),
+                'log_probs': log_prob,
+                'policy': policy,
+                'loss': _loss,
+                'acc': top1.item(),
+            })
         if loss_ema:
             loss_ema = loss_ema * 0.9 + loss.item() * 0.1
         else:
@@ -148,7 +164,11 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loader.set_postfix(postfix)
 
         if scheduler is not None:
-            scheduler.step(epoch - 1 + float(steps) / total_steps)
+            if isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+                scheduler.step(epoch - 1 + float(steps) / total_steps)
+            else:
+                scheduler.step()
+
 
         del preds, loss, top1, top5, data, label
 
@@ -164,6 +184,8 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     if verbose:
         for key, value in metrics.items():
             writer.add_scalar(key, value, epoch)
+    if trace:
+        return tracker, metrics
     return metrics
 
 

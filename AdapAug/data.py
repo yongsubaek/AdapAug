@@ -22,8 +22,11 @@ from AdapAug.imagenet import ImageNet
 from AdapAug.networks.efficientnet_pytorch.model import EfficientNet
 from collections import Counter
 
+op_list = augment_list(False)
+
 logger = get_logger('Fast AutoAugment')
 logger.setLevel(logging.INFO)
+
 _IMAGENET_PCA = {
     'eigval': [0.2175, 0.0188, 0.0045],
     'eigvec': [
@@ -99,45 +102,6 @@ class GrAugMix(Dataset):
 
         return img, target
 
-class GrAugCIFAR10(torchvision.datasets.CIFAR10):
-    def __init__(self, root, gr_assign, gr_policies, train=True, transform=None, target_transform=None,\
-                 download=False, gr_ids=None):
-        super(GrAugCIFAR10, self).__init__(root, train=train, transform=transform,\
-                                          target_transform=target_transform, download=download)
-        self.transform = transform
-        self.gr_assign = gr_assign
-        self.gr_policies = gr_policies
-        if gr_ids is not None:
-            self.gr_ids = gr_ids
-        else:
-            self.gr_ids = None
-
-
-    def __getitem__(self, index):
-        """
-        Args:
-            index (int): Index
-
-        Returns:
-            tuple: (image, target) where target is index of the target class.
-        """
-        img, target = self.data[index], self.targets[index]
-
-        # doing this so that it is consistent with all other datasets
-        # to return a PIL Image
-        img = Image.fromarray(img)
-
-        if self.transform is not None:
-            if self.gr_ids is not None and self.gr_policies is not None:
-                gr_id = self.gr_ids[index]
-                img = Augmentation(self.gr_policies[gr_id])(img)
-            img = self.transform(img)
-
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-
-        return img, target
-
 class GrAugData(Dataset):
     def __init__(self, dataname, transform=None, gr_assign=None, gr_policies=None, gr_ids=None, target_transform=None, **kargs):
         dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
@@ -180,6 +144,51 @@ class GrAugData(Dataset):
 
         return img, target
 
+class AdapAugData(Dataset):
+    def __init__(self, dataname, controller=None, transform=None, policies=None, target_transform=None, clean_transform=None, **kargs):
+        dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
+        self.data = dataset.data if dataname != "SVHN" else np.transpose(dataset.data, (0,2,3,1))
+        self.targets = self.labels = dataset.targets if dataname != "SVHN" else dataset.labels
+        self.transform = transform
+        self.target_transform = target_transform
+        self.clean_transform = clean_transform
+        self.controller = controller
+        self.policies = policies
+        self.log_probs = None
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (image, target) where target is index of the target class.
+        """
+        img, target = self.data[index], self.targets[index]
+
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        img = Image.fromarray(img)
+
+        if self.transform is not None:
+            if self.policies is not None:
+                log_prob = self.log_probs[index]
+                policy = self.policies[index]
+                aug_img = Augmentation(policy)(img)
+                aug_img = self.transform(aug_img)
+                img = self.clean_transform(img)
+            else:
+                img = self.transform(img)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        if self.policies is not None:
+            return (aug_img, img, log_prob, policy), target
+        else:
+            return img, target
 
 def get_gr_dist(dataset, batch, dataroot, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, get_dataset=False):
     # augmented datasets without split
@@ -582,7 +591,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_assign=No
         return validloader
 
 
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, rand_val=False):
+def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, controller=None, _transform=None, rand_val=False):
     if 'cifar' in dataset or 'svhn' in dataset:
         if "cifar" in dataset:
             _mean, _std = _CIFAR_MEAN, _CIFAR_STD
@@ -672,13 +681,17 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         ])
     train_idx = valid_idx = None
     if dataset == 'cifar10':
-        if isinstance(C.get()['aug'], dict):
+        if controller is not None:
+            total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
+        elif isinstance(C.get()['aug'], dict):
             total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
-        if isinstance(C.get()['aug'], dict):
+        if controller is not None:
+            total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
+        elif isinstance(C.get()['aug'], dict):
             total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
@@ -689,7 +702,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
 
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'cifar100':
-        if isinstance(C.get()['aug'], dict):
+        if controller is not None:
+            total_trainset = AdapAugData("CIFAR100", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
+        elif isinstance(C.get()['aug'], dict):
             total_trainset = GrAugData("CIFAR100", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=False, transform=transform_train)
@@ -700,7 +715,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         total_trainset = ConcatDataset([trainset, extraset])
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
     elif dataset == 'reduced_svhn':
-        if isinstance(C.get()['aug'], dict):
+        if controller is not None:
+            total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test)
+        elif isinstance(C.get()['aug'], dict):
             total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], split='train', download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
@@ -779,6 +796,20 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         print(Counter(gr_ids))
         total_trainset.gr_ids = gr_ids
 
+    if isinstance(total_trainset, AdapAugData) and total_trainset.policies is None and total_trainset.controller is not None:
+        with torch.no_grad():
+            temp_loader = torch.utils.data.DataLoader(
+                        total_trainset, batch_size=batch, shuffle=False, num_workers=4,
+                        drop_last=False)
+            policies = []
+            log_probs = []
+            total_trainset.controller.eval()
+            for data, _ in temp_loader:
+                log_prob, _, sampled_policies = total_trainset.controller(data.cuda())
+                policies.append(sampled_policies.detach())
+                log_probs.append(log_prob.detach())
+            total_trainset.log_probs = torch.cat(log_probs).cpu().numpy()
+            total_trainset.policies = torch.cat(policies).cpu().numpy()
     if split > 0.0:
         if train_idx is None or valid_idx is None:
             # filter by split ratio
@@ -879,11 +910,13 @@ class Augmentation(object):
     def __call__(self, img):
         for _ in range(1):
             policy = random.choice(self.policies)
-            self.policy = policy
             for name, pr, level in policy:
+                if type(name) != str:
+                    name, pr, level = (op_list[name][0].__name__, pr/10., level/10.+.1)
                 if random.random() > pr:
                     continue
                 img = apply_augment(img, name, level)
+            # self.policy = policy
         return img
 
 class EfficientNetRandomCrop:

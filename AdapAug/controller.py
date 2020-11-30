@@ -98,7 +98,7 @@ class Controller(nn.Module):
             logit = self.tanh_constant * torch.tanh(logit)
         return logit
 
-    def forward(self, image=None):
+    def forward(self, image=None, policy=None):
         """
         return: log_probs, entropys, subpolicies
         log_probs: batch of log_prob, (tensor)[batch or 1]
@@ -131,7 +131,10 @@ class Controller(nn.Module):
                 logit = self.o_logit(output)                    # [batch, _operation_types]
                 logit = self.softmax_tanh(logit)
                 o_id_dist = Categorical(logits=logit)
-                o_id = o_id_dist.sample()                       # [batch]
+                if policy is not None:
+                    o_id = policy[:,i_subpol,i_op,0]
+                else:
+                    o_id = o_id_dist.sample()                   # [batch]
                 log_prob = o_id_dist.log_prob(o_id)             # [batch]
                 entropy = o_id_dist.entropy()                   # [batch]
                 log_probs.append(log_prob)
@@ -145,7 +148,10 @@ class Controller(nn.Module):
                     logit = self.p_logit(output)
                     logit = self.softmax_tanh(logit)
                     p_id_dist = Categorical(logits=logit)
-                    p_id = p_id_dist.sample()
+                    if policy is not None:
+                        p_id = policy[:,i_subpol,i_op,1]
+                    else:
+                        p_id = p_id_dist.sample()
                     log_prob = p_id_dist.log_prob(p_id)
                     entropy = p_id_dist.entropy()
                     log_probs.append(log_prob)
@@ -160,7 +166,10 @@ class Controller(nn.Module):
                 logit = self.m_logit(output)
                 logit = self.softmax_tanh(logit)
                 m_id_dist = Categorical(logits=logit)
-                m_id = m_id_dist.sample()
+                if policy is not None:
+                    m_id = policy[:,i_subpol,i_op,2]
+                else:
+                    m_id = m_id_dist.sample()
                 log_prob = m_id_dist.log_prob(m_id)
                 entropy = m_id_dist.entropy()
                 log_probs.append(log_prob)
@@ -170,7 +179,7 @@ class Controller(nn.Module):
                 subpolicy.append([o_id.detach().cpu().numpy(), p_id.detach().cpu().numpy(), m_id.detach().cpu().numpy()])
             subpolicies.append(subpolicy)
         sampled_policies = np.array(subpolicies)                    # (np.array) [n_subpolicy, n_op, 3, batch]
-        sampled_policies = torch.from_numpy(np.moveaxis(sampled_policies,-1,0)).cuda()  # (np.array) [batch, n_subpolicy, n_op, 3]
+        sampled_policies = torch.from_numpy(np.moveaxis(sampled_policies,-1,0)).cuda()  # [batch, n_subpolicy, n_op, 3]
         log_probs = sum(log_probs)                             # (tensor) [batch]
         entropys = sum(entropys)                               # (tensor) [batch]
         return log_probs, entropys, sampled_policies
