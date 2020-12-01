@@ -22,7 +22,7 @@ from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 from AdapAug.controller import Controller
-from AdapAug.train_ctl import *
+from AdapAug.train_ctl import train_controller, train_controller2, train_controller3
 import csv, random
 import warnings
 warnings.filterwarnings("ignore")
