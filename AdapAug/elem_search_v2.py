@@ -24,7 +24,7 @@ from theconf import Config as C, ConfigArgumentParser
 from AdapAug.controller import Controller
 from AdapAug.train_ctl import *
 import csv, random
-import warning
+import warnings
 warnings.filterwarnings("ignore")
 
 

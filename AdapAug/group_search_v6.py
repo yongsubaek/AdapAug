@@ -317,7 +317,6 @@ if __name__ == '__main__':
     if 'test_dataset' not in C.get().conf:
         C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
-    C.get()['epoch'] = 200
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
@@ -349,7 +348,6 @@ if __name__ == '__main__':
             time.sleep(10)
         if is_done:
             break
-    C.get()['epoch'] = 210
     logger.info('getting results...')
     pretrain_results = ray.get(reqs)
     aff_bases = []

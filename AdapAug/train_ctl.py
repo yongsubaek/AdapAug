@@ -385,7 +385,7 @@ def train_controller2(controller, config):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                     pol_loss = -torch.min(surr1, surr2).sum()
-                pol_loss = pol_loss / (ctl_num_aggre if (step+1) < aff_loader_len else aff_train_len % ctl_num_aggre)
+                pol_loss = pol_loss / ctl_num_aggre
                 pol_loss.backward(retain_graph=ctl_num_aggre>1)
                 if (step+1) % ctl_num_aggre == 0 or (step+1)==aff_loader_len:
                     torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
@@ -437,7 +437,7 @@ def train_controller2(controller, config):
                 surr1 = ratios * advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2).sum()
-            pol_loss = pol_loss / (ctl_num_aggre if (step+1) < div_loader_len else div_train_len % ctl_num_aggre)
+            pol_loss = pol_loss / ctl_num_aggre
             pol_loss.backward(retain_graph=ctl_num_aggre>1)
             if (step+1) % ctl_num_aggre == 0 or (step+1)==div_loader_len:
                 torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
