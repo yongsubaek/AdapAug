@@ -266,10 +266,9 @@ def train_controller2(controller, config):
     mode = config['mode']
     load_search = config['load_search']
     childaug = config['childaug']
-    eps_clip = 0.1
     ctl_train_steps = config['ctl_train_steps']
-    # aff_step = config['aff_step']
-    # div_step = config['div_step']
+
+    eps_clip = 0.1
     ctl_num_aggre = 1
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
@@ -339,17 +338,24 @@ def train_controller2(controller, config):
     C.get()["aug"] = "default"
     _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller)
     ### Training Loop
+    if ctl_train_steps is not None:
+        aff_step = ctl_train_steps
+        div_step = len(total_loader) - ctl_train_steps
+    else:
+        aff_step = config['aff_step']
+        div_step = config['div_step'] if config['div_step'] is not None else len(total_loader)
+
     test_metrics = []
     total_t_train_time = 0.
     for epoch in range(C.get()['epoch']):
         ## Affinity Training
         controller.train()
         baseline = ExponentialMovingAverage(ctl_ema_weight)
-        repeat = len(total_loader.dataset)//len(valid_loader.dataset) if ctl_train_steps is None else 1
+        repeat = 1#len(total_loader.dataset)//len(valid_loader.dataset) if aff_step is None else 1
         for _ in range(repeat):
             for step, (inputs, labels) in enumerate(valid_loader):
                 batch_size = len(labels)
-                if ctl_train_steps is not None and step >= ctl_train_steps: break
+                if aff_step is not None and step >= aff_step: break
                 st = time.time()
                 inputs, labels = inputs.cuda(), labels.cuda()
                 log_probs, entropys, sampled_policies = controller(inputs)
@@ -388,12 +394,11 @@ def train_controller2(controller, config):
                     'reward': reward.sum().cpu().detach().item(),
                     'advantages': advantages.sum().cpu().detach().item()
                     })
-            if ctl_train_steps != 0:
+            if aff_step != 0:
                 logger.info(f"(Affinity)[Train Controller {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['affinity'] / 'cnt'}")
         ## TargetNetwork Training
         ts = time.time()
-        if ctl_train_steps != 0:
-            _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller)
+        _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller)
         t_net.train()
         t_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True)
@@ -403,7 +408,6 @@ def train_controller2(controller, config):
         controller.train()
         t_dict = t_tracker.get_dict()
         baseline = ExponentialMovingAverage(ctl_ema_weight)
-        div_step = (len(t_dict['clean_data']) - ctl_train_steps) if ctl_train_steps is not None else len(t_dict['clean_data'])
         for step, (inputs, labels) in enumerate(t_dict['clean_data']):
             batch_size = len(labels)
             inputs, labels = inputs.cuda(), labels.cuda()
@@ -477,7 +481,7 @@ def train_controller2(controller, config):
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'aff_trace': dict(trace['affinity'].trace),
                         'div_trace': dict(trace['diversity'].trace),
-                        'test_trace': dict(trace['test'].trace)
+                        # 'test_trace': dict(trace['test'].trace)
                         }, ctl_save_path)
         if epoch < C.get()['epoch']-1:
             for k in trace:
