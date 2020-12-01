@@ -164,10 +164,11 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loader.set_postfix(postfix)
 
         if scheduler is not None:
-            if isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
-                scheduler.step(epoch - 1 + float(steps) / total_steps)
-            else:
-                scheduler.step()
+            scheduler.step(epoch - 1 + float(steps) / total_steps)
+            # if isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+            #     scheduler.step(epoch - 1 + float(steps) / total_steps)
+            # else:
+            #     scheduler.step()
 
 
         del preds, loss, top1, top5, data, label

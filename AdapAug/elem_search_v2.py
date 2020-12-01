@@ -8,7 +8,7 @@ import torch
 from torch.distributions import Categorical
 import numpy as np
 from hyperopt import hp
-# import ray
+import ray
 from tqdm import tqdm
 
 from pathlib import Path
@@ -111,17 +111,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     os.makedirs(base_path, exist_ok=True)
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
-# @ray.remote(num_gpus=1)
-def eval_controller(config, controller, dataroot, cv_ratio=0., cv_fold=0, save_path=None, skip_exist=False):
-    """
-    training with augmented data and test with pure data
-    """
-    C.get()
-    C.get().conf = config
-    result = train_and_eval_ctl(None, controller, dataroot, test_ratio=cv_ratio, cv_fold=cv_fold, save_path=save_path, only_eval=skip_exist)
-    return C.get()['model']['type'], cv_fold, result
-
-# @ray.remote(num_gpus=1, max_calls=1)
+@ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
     C.get()
     C.get().conf = config
@@ -139,19 +129,14 @@ if __name__ == '__main__':
     parser.add_argument('--until', type=int, default=5)
     parser.add_argument('--num-op', type=int, default=2)
     parser.add_argument('--num-policy', type=int, default=5)
-    parser.add_argument('--num-search', type=int, default=200)
     parser.add_argument('--cv-num', type=int, default=5)
     parser.add_argument('--cv-ratio', type=float, default=0.4)
     parser.add_argument('--decay', type=float, default=-1)
     parser.add_argument('--redis', type=str)
-    parser.add_argument('--per-class', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--random', action='store_true')
-    parser.add_argument('--rpc', type=int, default=10)
     parser.add_argument('--version', type=int, default=1)
-    parser.add_argument('--repeat', type=int, default=1)
-    parser.add_argument('--iter', type=int, default=5)
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--load_search', type=str)
@@ -161,7 +146,8 @@ if __name__ == '__main__':
     parser.add_argument('--lstm_size', type=int, default=100)
     parser.add_argument('--emb_size', type=int, default=32)
     parser.add_argument('--c_lr', type=float, default=0.00035)
-
+    parser.add_argument('--cv_id', type=int)
+    parser.add_argument('--c_step', type=int)
     args = parser.parse_args()
     torch.backends.cudnn.benchmark = True
     C.get()['exp_name'] = args.exp_name
@@ -173,61 +159,58 @@ if __name__ == '__main__':
     add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
-    logger.info('initialize ray...')
-    # ray.init(address=args.redis)
-
-    num_result_per_cv = args.rpc
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     bench_policy_set = C.get()["aug"]
     if 'test_dataset' not in C.get().conf:
         C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
-
+    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
+    logger.info('initialize ray...')
+    ray.init(address=args.redis)
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
-    paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     print(paths)
-    # reqs = [
-    #     train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
-    #     for i in range(cv_num)]
-    #
-    # tqdm_epoch = tqdm(range(C.get()['epoch']))
-    # is_done = False
-    # for epoch in tqdm_epoch:
-    #     while True:
-    #         epochs_per_cv = OrderedDict()
-    #         for cv_idx in range(cv_num):
-    #             try:
-    #                 latest_ckpt = torch.load(paths[cv_idx])
-    #                 if 'epoch' not in latest_ckpt:
-    #                     epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
-    #                     continue
-    #                 epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
-    #             except Exception as e:
-    #                 continue
-    #         tqdm_epoch.set_postfix(epochs_per_cv)
-    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
-    #             is_done = True
-    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
-    #             break
-    #         time.sleep(10)
-    #     if is_done:
-    #         break
-    # logger.info('getting results...')
-    # pretrain_results = ray.get(reqs)
-    # aff_bases = []
-    # for r_model, r_cv, r_dict in pretrain_results:
-    #     logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
-    #     # for Affinity calculation
-    #     aff_bases.append(r_dict['top1_valid'])
-    #     del r_model, r_cv, r_dict
-    # logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
-    # if args.until == 1:
-    #     sys.exit(0)
-    # del latest_ckpt, pretrain_results, reqs
-    # ray.shutdown()
+    reqs = [
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
+        for i in range(cv_num)]
+
+    tqdm_epoch = tqdm(range(C.get()['epoch']))
+    is_done = False
+    for epoch in tqdm_epoch:
+        while True:
+            epochs_per_cv = OrderedDict()
+            for cv_idx in range(cv_num):
+                try:
+                    latest_ckpt = torch.load(paths[cv_idx])
+                    if 'epoch' not in latest_ckpt:
+                        epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
+                        continue
+                    epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
+                except Exception as e:
+                    continue
+            tqdm_epoch.set_postfix(epochs_per_cv)
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+                is_done = True
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+                break
+            time.sleep(10)
+        if is_done:
+            break
+    logger.info('getting results...')
+    pretrain_results = ray.get(reqs)
+    aff_bases = []
+    for r_model, r_cv, r_dict in pretrain_results:
+        logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+        # for Affinity calculation
+        aff_bases.append(r_dict['top1_valid'])
+        del r_model, r_cv, r_dict
+    logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
+    if args.until == 1:
+        sys.exit(0)
+    del latest_ckpt, pretrain_results, reqs
+    ray.shutdown()
     logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search-g_train')
     ops = augment_list(False)
@@ -238,7 +221,7 @@ if __name__ == '__main__':
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
-            'childaug': args.childaug, 'cv_num': cv_num,
+            'childaug': args.childaug, 'cv_num': cv_num, 'cv_id': args.cv_id, 'ctl_train_steps': args.c_step,
             'mode': args.mode, 'c_lr': args.c_lr
     }
     if args.version == 2:
@@ -252,7 +235,7 @@ if __name__ == '__main__':
     # test t_net
     logger.info('getting results...')
     for k in trace:
-        logger.info(f"{k}\n{json.dumps(trace[k] / 'cnt')}")
+        logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
 
     # Affinity Calculation
     # augment = {
