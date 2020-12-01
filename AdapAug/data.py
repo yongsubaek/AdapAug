@@ -21,7 +21,6 @@ from AdapAug.common import get_logger
 from AdapAug.imagenet import ImageNet
 from AdapAug.networks.efficientnet_pytorch.model import EfficientNet
 from collections import Counter
-
 op_list = augment_list(False)
 
 logger = get_logger('Fast AutoAugment')
@@ -592,6 +591,8 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_assign=No
 
 
 def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, controller=None, _transform=None, rand_val=False):
+    if _transform is None:
+        _transform = C.get()['aug']
     if 'cifar' in dataset or 'svhn' in dataset:
         if "cifar" in dataset:
             _mean, _std = _CIFAR_MEAN, _CIFAR_STD
@@ -643,39 +644,39 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     else:
         raise ValueError('dataset=%s' % dataset)
 
-    if isinstance(C.get()['aug'], list):
+    if isinstance(_transform, list):
         logger.debug('augmentation provided.')
-        transform_train.transforms.insert(0, Augmentation(C.get()['aug']))
-    elif isinstance(C.get()['aug'], dict):
+        transform_train.transforms.insert(0, Augmentation(_transform))
+    elif isinstance(_transform, dict):
         # group version
         logger.debug('group augmentation provided.')
     else:
-        logger.debug('augmentation: %s' % C.get()['aug'])
-        if C.get()['aug'] == 'fa_reduced_cifar10':
+        logger.debug('augmentation: %s' % _transform)
+        if _transform == 'fa_reduced_cifar10':
             transform_train.transforms.insert(0, Augmentation(fa_reduced_cifar10()))
 
-        elif C.get()['aug'] == 'fa_reduced_imagenet':
+        elif _transform == 'fa_reduced_imagenet':
             transform_train.transforms.insert(0, Augmentation(fa_resnet50_rimagenet()))
 
-        elif C.get()['aug'] == 'fa_reduced_svhn':
+        elif _transform == 'fa_reduced_svhn':
             transform_train.transforms.insert(0, Augmentation(fa_reduced_svhn()))
 
-        elif C.get()['aug'] == 'arsaug':
+        elif _transform == 'arsaug':
             transform_train.transforms.insert(0, Augmentation(arsaug_policy()))
-        elif C.get()['aug'] == 'autoaug_cifar10':
+        elif _transform == 'autoaug_cifar10':
             transform_train.transforms.insert(0, Augmentation(autoaug_paper_cifar10()))
-        elif C.get()['aug'] == 'autoaug_extend':
+        elif _transform == 'autoaug_extend':
             transform_train.transforms.insert(0, Augmentation(autoaug_policy()))
-        elif C.get()['aug'] in ['default', "clean", "nonorm", "nocut"]:
+        elif _transform in ['default', "clean", "nonorm", "nocut"]:
             pass
         else:
-            raise ValueError('not found augmentations. %s' % C.get()['aug'])
+            raise ValueError('not found augmentations. %s' % _transform)
 
-    if C.get()['cutout'] > 0 and C.get()['aug'] != "nocut":
+    if C.get()['cutout'] > 0 and _transform != "nocut":
         transform_train.transforms.append(CutoutDefault(C.get()['cutout']))
-    if C.get()['aug'] == "clean":
+    if _transform == "clean":
         transform_train = transform_test
-    elif C.get()['aug'] == "nonorm":
+    elif _transform == "nonorm":
         transform_train = transforms.Compose([
             transforms.ToTensor()
         ])
@@ -683,29 +684,28 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     if dataset == 'cifar10':
         if controller is not None:
             total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
-        elif isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+        elif isinstance(_transform, dict):
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=_transform, train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         if controller is not None:
             total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
-        elif isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+        elif isinstance(_transform, dict):
+            total_trainset = GrAugData("CIFAR10", root=dataroot, gr_assign=gr_assign, gr_policies=_transform, train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=4000, random_state=0)   # 4000 trainset
         sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
         for _ in range(split_idx+1):
             train_idx, valid_idx = next(sss)
-
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'cifar100':
         if controller is not None:
             total_trainset = AdapAugData("CIFAR100", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test)
-        elif isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugData("CIFAR100", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], train=True, download=False, transform=transform_train)
+        elif isinstance(_transform, dict):
+            total_trainset = GrAugData("CIFAR100", root=dataroot, gr_assign=gr_assign, gr_policies=_transform, train=True, download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR100(root=dataroot, train=False, download=False, transform=transform_test)
@@ -717,8 +717,8 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     elif dataset == 'reduced_svhn':
         if controller is not None:
             total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test)
-        elif isinstance(C.get()['aug'], dict):
-            total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=C.get()['aug'], split='train', download=False, transform=transform_train)
+        elif isinstance(_transform, dict):
+            total_trainset = GrAugData("SVHN", root=dataroot, gr_assign=gr_assign, gr_policies=_transform, split='train', download=False, transform=transform_train)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=1000, test_size=7325, random_state=0)
@@ -770,9 +770,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         testset = Subset(testset, test_idx)
         print('reduced_imagenet train=', len(total_trainset))
     elif dataset == "cifar10_svhn":
-        if isinstance(C.get()['aug'], dict):
+        if isinstance(_transform, dict):
             # last stage: benchmark test
-            total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=C.get()['aug'], root=dataroot, train=True, download=False, transform=transform_train, gr_ids=gr_ids)
+            total_trainset = GrAugMix(dataset.split("_"), gr_assign=gr_assign, gr_policies=_transform, root=dataroot, train=True, download=False, transform=transform_train, gr_ids=gr_ids)
         else:
             # eval_tta & childnet training
             total_trainset = GrAugMix(dataset.split("_"), root=dataroot, train=True, download=False, transform=transform_train)
@@ -870,7 +870,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         sampler=train_sampler, drop_last=True)
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
-        sampler=valid_sampler, drop_last=False if not rand_val else True)
+        sampler=valid_sampler, drop_last=False)
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
         drop_last=False

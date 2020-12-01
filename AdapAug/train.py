@@ -121,10 +121,10 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loss = loss_fn(preds, targets, shuffled_targets, lam)
             del shuffled_targets, lam
 
+        if trace:
+            _loss = loss.detach().cpu()
+            loss = loss.mean()
         if optimizer:
-            if trace:
-                _loss = loss.detach().cpu()
-                loss = loss.mean()
             loss += wd * (1. / 2.) * sum([torch.sum(p ** 2) for p in params_without_bn])
             loss.backward()
             grad_clip = C.get()['optimizer'].get('clip', 5.0)
@@ -146,7 +146,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
-                'clean_data': (clean_data, label.detach().cpu()),
+                'clean_data': (clean_data.detach().cpu(), label.detach().cpu()),
                 'log_probs': log_prob,
                 'policy': policy,
                 'loss': _loss,

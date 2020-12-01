@@ -9,14 +9,17 @@ from torch.distributions import Categorical
 import numpy as np
 from hyperopt import hp
 import ray
+from ray.tune.suggest.hyperopt import HyperOptSearch
+from ray.tune.suggest import ConcurrencyLimiter
+from ray.tune import register_trainable, run_experiments, run, Experiment
+
 from tqdm import tqdm
 
 from pathlib import Path
 lib_dir = (Path("__file__").parent).resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
-from AdapAug.augmentations import augment_list
 from AdapAug.common import get_logger, add_filehandler
-from AdapAug.data import get_dataloaders
+from AdapAug.data import get_dataloaders, get_gr_dist, get_post_dataloader
 from AdapAug.metrics import Accumulator, accuracy
 from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
@@ -27,89 +30,38 @@ import csv, random
 import warning
 warnings.filterwarnings("ignore")
 
-
-def save_res(iter, acc, best, term):
-    base_path = f"models/{C.get()['exp_name']}"
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
-    os.makedirs(base_path, exist_ok=True)
-    f = open(os.path.join(base_path, "iter_acc.csv"), "a", newline="")
-    wr = csv.writer(f)
-    wr.writerow([iter, acc, best, term])
-    f.close()
-
 logger = get_logger('Adap AutoAugment')
-
-def gen_rand_policy(num_policy, num_op):
-    op_list = augment_list(False)
-    policies = []
-    for i in range(num_policy):
-        ops = []
-        for j in range(num_op):
-            op_idx = random.randint(0, len(op_list)-1)
-            op_prob = random.random()
-            op_level = random.random()
-            ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
-        policies.append(ops)
-    return policies
-
-def get_affinity(aug, aff_bases, config, augment):
-    C.get()
-    C.get().conf = config
-    # setup - provided augmentation rules
-    C.get()['aug'] = aug
-    load_paths = augment['load_paths']
-    cv_num = augment["cv_num"]
-
-    aug_loaders = []
-    for cv_id in range(cv_num):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_ids=augment["gr_ids"])
-        aug_loaders.append(validloader)
-        del tl, tl2
-
-    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
-    aug_accs = []
-    for cv_id, loader in enumerate(aug_loaders):
-        # eval
-        model = get_model(C.get()['model'], num_class(C.get()['dataset']))
-        ckpt = torch.load(load_paths[cv_id])
-        if 'model' in ckpt:
-            model.load_state_dict(ckpt['model'])
-        else:
-            model.load_state_dict(ckpt)
-        model.eval()
-
-        metrics = Accumulator()
-        for data, label in loader:
-            data = data.cuda()
-            label = label.cuda()
-
-            pred = model(data)
-            loss = loss_fn(pred, label) # (N)
-
-            _, pred = pred.topk(1, 1, True, True)
-            pred = pred.t()
-            correct = pred.eq(label.view(1, -1).expand_as(pred)).detach().cpu().numpy() # (1,N)
-
-            # top1 = accuracy(pred, label, (1, 5))[0].detach().cpu().numpy()
-            # correct = top1 * len(data)
-            metrics.add_dict({
-                'loss': np.sum(loss.detach().cpu().numpy()),
-                'correct': np.sum(correct),
-                'cnt': len(data)
-            })
-            del loss, correct, pred, data, label
-        aug_accs.append(metrics['correct'] / metrics['cnt'])
-    del model
-    affs = []
-    for aug_valid, clean_valid in zip(aug_accs, aff_bases):
-        affs.append(aug_valid - clean_valid)
-    return affs
 
 def _get_path(dataset, model, tag, basemodel=True):
     base_path = "models" if basemodel else f"models/{C.get()['exp_name']}"
     base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), base_path)
     os.makedirs(base_path, exist_ok=True)
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
+
+# @ray.remote(num_gpus=1, max_calls=1)
+def train_ctl_wrapper(config, augment, reporter):
+    start_t = time.time()
+    C.get()
+    C.get()['exp_name'] = ///
+    C.get().conf = config
+    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
+    os.makedirs(base_path, exist_ok=True)
+    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
+    augment['target_path'] = base_path + "/target_network.pt"
+    augment['ctl_save_path'] = base_path + "/ctl_network.pt"
+    if augment['version'] == 2:
+        train_ctl = train_controller2
+    elif augment['version'] == 3:
+        train_ctl = train_controller3
+    else:
+        train_ctl = train_controller
+    controller = Controller(n_subpolicy=augment['num_policy'], lstm_size=augment['lstm_size'], emb_size=augment['emb_size'],
+                            operation_prob=0)
+    trace, test_metrics = train_ctl(controller, augment)
+    metrics = test_metrics[-1]
+    gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
+    reporter(loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
+    return C.get()['model']['type'], cv_id, result
 
 @ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
@@ -136,43 +88,45 @@ if __name__ == '__main__':
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--random', action='store_true')
-    parser.add_argument('--version', type=int, default=1)
+    parser.add_argument('--version', type=int, default=2)
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
-    parser.add_argument('--exp_name', type=str)
 
     parser.add_argument('--lstm_size', type=int, default=100)
     parser.add_argument('--emb_size', type=int, default=32)
     parser.add_argument('--c_lr', type=float, default=0.00035)
-    parser.add_argument('--cv_id', type=int)
     parser.add_argument('--c_step', type=int)
-    parser.add_argument('--a_step', type=int)
-    parser.add_argument('--d_step', type=int)
-    parser.add_argument('--c_agg', type=int, default=1)
+
+    # parser.add_argument('--exp_name', type=str)
+    # parser.add_argument('--cv_id', type=int)
+    # parser.add_argument('--a_step', type=int)
+    # parser.add_argument('--d_step', type=int)
+    # parser.add_argument('--c_agg', type=int, default=1)
+    parser.add_argument('--search_name', type=str)
+    parser.add_argument('--num-search', type=int, default=4)
 
     args = parser.parse_args()
     torch.backends.cudnn.benchmark = True
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
         C.get()['optimizer']['decay'] = args.decay
-    C.get()['exp_name'] = args.exp_name
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
-    os.makedirs(base_path, exist_ok=True)
-    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
+    # C.get()['exp_name'] = args.exp_name
+    # base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
+    # os.makedirs(base_path, exist_ok=True)
+    # add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
-    bench_policy_set = C.get()["aug"]
     if 'test_dataset' not in C.get().conf:
         C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
-    # logger.info('initialize ray...')
-    # ray.init(address=args.redis)
-    # logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
+    logger.info('initialize ray...')
+    ray.init(address=args.redis)
+    logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     # logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     # w.start(tag='train_no_aug')
     # print(paths)
@@ -217,44 +171,45 @@ if __name__ == '__main__':
     # ray.shutdown()
     # logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search-g_train')
-    ops = augment_list(False)
-    target_path = base_path + "/target_network.pt"
-    ctl_save_path = base_path + "/ctl_network.pt"
-    controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size,
-                            operation_prob=0).cuda()
+
     ctl_config = {
-            'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
-            'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
-            'childaug': args.childaug, 'cv_num': cv_num, 'cv_id': args.cv_id, 'ctl_train_steps': args.c_step,
-            'mode': args.mode, 'c_lr': args.c_lr, 'aff_step': args.a_step, 'div_step': args.d_step,
-            'ctl_num_aggre': args.c_agg,
-    }
-    if args.version == 2:
-        train_ctl = train_controller2
-    elif args.version == 3:
-        train_ctl = train_controller3
-    else:
-        train_ctl = train_controller
+            'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search, 'childnet_paths': paths,
+            'num_policy': args.num_policy, 'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
+            'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num,
+            'cv_id': args.cv_id,
+            'ctl_train_steps': args.c_step,
+            'c_lr': args.c_lr,
+            }
 
-    trace, t_net = train_ctl(controller, ctl_config)
-    # test t_net
+    space = {
+            'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
+            'mode': hp.choice('mode', ["ppo", "reinforce"]),
+            'aff_step': hp.choice('aff_step', [1, 10, 100, None]),
+            'div_step': hp.choice('div_step', [1, 10, 100, None]),
+            }
+    num_process_per_gpu = 1
+    name = args.search_name
+    register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
+    reward_attr = 'test_top1'
+    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+    experiment_spec = Experiment(
+        name,
+        run=name,
+        num_samples=args.num_search,
+        stop={'training_iteration': args.num_policy},
+        resources_per_trial={'gpu': 1./num_process_per_gpu},
+        config=ctl_config,
+        local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', name, "ray_results"),
+        )
+    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                    global_checkpoint_period=np.inf)
     logger.info('getting results...')
-    for k in trace:
-        logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
+    results = analysis.trials
+    results = [x for x in results if x.last_result and reward_attr in x.last_result]
+    for result in results:
+        logger.info('loss=%.12f top1_test=%.4f %s' % (result.last_result['loss'], result.last_result['test_top1'], result.config[k] for k in space))
 
-    # Affinity Calculation
-    # augment = {
-    #     'dataroot': args.dataroot, 'load_paths': paths,
-    #     'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-    # }
-    # bench_affs = get_affinity(bench_policy_set, aff_bases, copy.deepcopy(copied_c), augment)
-    # aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
-    # # Diversity calculation
-    # bench_divs = []
-    # aug_divs = []
-    # logger.info('processed in %.4f secs' % w.pause('train_aug'))
-    # logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
-    # logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
-    # logger.info("bench_div_avg={:.2f}".format(np.mean(bench_divs)))
-    # logger.info("aug_div_avg={:.2f}".format(np.mean(aug_divs)))
+    # for k in trace:
+    #     logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
     logger.info(w)
