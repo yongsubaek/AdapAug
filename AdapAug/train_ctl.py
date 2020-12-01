@@ -268,6 +268,8 @@ def train_controller2(controller, config):
     childaug = config['childaug']
     eps_clip = 0.1
     ctl_train_steps = config['ctl_train_steps']
+    # aff_step = config['aff_step']
+    # div_step = config['div_step']
     ctl_num_aggre = 1
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
@@ -304,8 +306,8 @@ def train_controller2(controller, config):
     # t_net = DataParallel(t_net).cuda()
 
     trace = {'affinity': Tracker(),
-             'diversity': Tracker(),
-             'test': Tracker()}
+             'diversity': Tracker()}
+             # 'test': Tracker()}
     # load TargetNetwork weights
     if load_search and os.path.isfile(target_path):
         data = torch.load(target_path)
@@ -328,7 +330,7 @@ def train_controller2(controller, config):
         c_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         trace['affinity'].trace = checkpoint['aff_trace']
         trace['diversity'].trace = checkpoint['div_trace']
-        trace['test'].trace = checkpoint['test_trace']
+        # trace['test'].trace = checkpoint['test_trace']
     else:
         logger.info('------Train Controller from scratch------')
     # get dataloaders
@@ -339,17 +341,7 @@ def train_controller2(controller, config):
     ### Training Loop
     test_metrics = []
     total_t_train_time = 0.
-    # Warm-up
-    warm_up_epoch = 0# C.get()['lr_schedule']['warmup']['epoch']
-    for epoch in range(warm_up_epoch):
-        ts = time.time()
-        t_net.train()
-        t_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
-                                        trace=True)
-        total_t_train_time += time.time() - ts
-        logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
-
-    for epoch in range(warm_up_epoch, C.get()['epoch']):
+    for epoch in range(C.get()['epoch']):
         ## Affinity Training
         controller.train()
         baseline = ExponentialMovingAverage(ctl_ema_weight)
@@ -357,7 +349,7 @@ def train_controller2(controller, config):
         for _ in range(repeat):
             for step, (inputs, labels) in enumerate(valid_loader):
                 batch_size = len(labels)
-                if step >= ctl_train_steps: break
+                if ctl_train_steps is not None and step >= ctl_train_steps: break
                 st = time.time()
                 inputs, labels = inputs.cuda(), labels.cuda()
                 log_probs, entropys, sampled_policies = controller(inputs)
@@ -411,11 +403,12 @@ def train_controller2(controller, config):
         controller.train()
         t_dict = t_tracker.get_dict()
         baseline = ExponentialMovingAverage(ctl_ema_weight)
+        div_step = (len(t_dict['clean_data']) - ctl_train_steps) if ctl_train_steps is not None else len(t_dict['clean_data'])
         for step, (inputs, labels) in enumerate(t_dict['clean_data']):
             batch_size = len(labels)
             inputs, labels = inputs.cuda(), labels.cuda()
             aug_loss = t_dict['loss'][step].cuda()
-            if step >= len(t_dict['clean_data']) - ctl_train_steps:
+            if step >= div_step:
                 policy = t_dict['policy'][step].cuda()
                 top1 = t_dict['acc'][step]
                 st = time.time()
@@ -424,7 +417,7 @@ def train_controller2(controller, config):
                 # clean_loss = criterion(t_net(inputs), labels) # clean data loss
                 reward = aug_loss #- clean_loss
                 baseline.update(reward.mean())
-                if step < len(t_dict['clean_data']) - ctl_train_steps: continue
+                if step < div_step: continue
                 advantages = reward - baseline.value()
                 advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
@@ -449,25 +442,12 @@ def train_controller2(controller, config):
                 'reward': reward.sum().cpu().detach().item(),
                 'advantages': advantages.sum().cpu().detach().item()
                 })
-        if step >= len(t_dict['clean_data']) - ctl_train_steps:
+        if step >= div_step:
             logger.info(f"(Diversity)[Train Controller {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['diversity'] / 'cnt'}")
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             # TargetNetwork Test
             t_net.eval()
-            # for data, label in test_loader:
-            #     _batch_size = len(data)
-            #     data, label = data.cuda(), label.cuda()
-            #     pred = t_net(data)
-            #     loss = criterion(pred, label).mean()
-            #     top1, top5 = accuracy(pred, label, (1,5))
-            #     trace['test'].add_dict({
-            #         'cnt': _batch_size,
-            #         'loss': loss.detach().cpu().item()*_batch_size,
-            #         'top1': top1.detach().cpu().item()*_batch_size,
-            #         'top5': top5.detach().cpu().item()*_batch_size,
-            #     })
-            # test_metric = trace['test'] / 'cnt'
             test_metric = run_epoch(t_net, test_loader, _criterion, None, desc_default='test T', epoch=epoch+1, verbose=False)
             test_metrics.append(test_metric.get_dict())
             logger.info(f"[Test T {epoch+1:3d}/{C.get()['epoch']:3d}] {test_metric}")
@@ -499,8 +479,9 @@ def train_controller2(controller, config):
                         'div_trace': dict(trace['diversity'].trace),
                         'test_trace': dict(trace['test'].trace)
                         }, ctl_save_path)
-        for k in trace:
-            trace[k].reset_accum()
+        if epoch < C.get()['epoch']-1:
+            for k in trace:
+                trace[k].reset_accum()
     C.get()["aug"] = ori_aug
     return trace, t_net
 
