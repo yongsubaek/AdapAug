@@ -25,7 +25,7 @@ from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 from AdapAug.controller import Controller
-from AdapAug.train_ctl import *
+from AdapAug.train_ctl import train_controller, train_controller2, train_controller3
 import csv, random
 import warnings
 warnings.filterwarnings("ignore")
@@ -61,7 +61,7 @@ def train_ctl_wrapper(config, augment, reporter):
     metrics = test_metrics[-1]
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
     reporter(loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
-    return C.get()['model']['type'], cv_id, result
+    return metrics
 
 @ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, evaluation_interval=5, gr_assign=None, gr_dist=None):
@@ -170,23 +170,24 @@ if __name__ == '__main__':
     # del latest_ckpt, pretrain_results, reqs
     # ray.shutdown()
     # logger.info('----- Search Test-Time Augmentation Policies -----')
-    w.start(tag='search-g_train')
+    w.start(tag='search&train')
 
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search, 'childnet_paths': paths,
             'num_policy': args.num_policy, 'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
-            'cv_id': args.cv_id,
             'ctl_train_steps': args.c_step,
             'c_lr': args.c_lr,
+            # 'cv_id': args.cv_id,
             }
 
     space = {
             'mode': hp.choice('mode', ["ppo", "reinforce"]),
-            'aff_step': hp.choice('aff_step', [1, 10, 100, None]),
-            'div_step': hp.choice('div_step', [1, 10, 100, None]),
-            'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
+            'aff_step': hp.qloguniform('aff_step', 1, 5.2, 1),
+            'div_step': hp.qloguniform('div_step', 1, 6.1, 1),
+            'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 1, 6.1, 1),
+            'cv_id': hp.choice('cv_id', [0,1,2,3,4])
             }
     num_process_per_gpu = 1
     name = args.search_name

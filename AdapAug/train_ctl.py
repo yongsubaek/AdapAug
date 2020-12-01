@@ -346,8 +346,8 @@ def train_controller2(controller, config):
         div_step = config['div_step']
     aff_loader_len = len(valid_loader)
     div_loader_len = len(total_loader)
-    aff_train_len = aff_loader_len if aff_step is None else aff_step
-    div_train_len = div_loader_len if div_step is None else div_step
+    aff_train_len = aff_loader_len if aff_step is None else min(aff_loader_len, int(aff_step))
+    div_train_len = div_loader_len if div_step is None else min(div_loader_len, int(div_step))
 
     test_metrics = []
     total_t_train_time = 0.
@@ -385,7 +385,11 @@ def train_controller2(controller, config):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                     pol_loss = -torch.min(surr1, surr2).sum()
-                pol_loss = pol_loss / ctl_num_aggre
+                if (step+1)==aff_loader_len:
+                    length = ctl_num_aggre if aff_train_len % ctl_num_aggre == 0 else aff_train_len % ctl_num_aggre
+                    pol_loss = pol_loss / length
+                else:
+                    pol_loss = pol_loss / ctl_num_aggre
                 pol_loss.backward(retain_graph=ctl_num_aggre>1)
                 if (step+1) % ctl_num_aggre == 0 or (step+1)==aff_loader_len:
                     torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
@@ -437,7 +441,11 @@ def train_controller2(controller, config):
                 surr1 = ratios * advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2).sum()
-            pol_loss = pol_loss / ctl_num_aggre
+            if (step+1)==aff_loader_len:
+                length = ctl_num_aggre if aff_train_len % ctl_num_aggre == 0 else aff_train_len % ctl_num_aggre
+                pol_loss = pol_loss / length
+            else:
+                pol_loss = pol_loss / ctl_num_aggre
             pol_loss.backward(retain_graph=ctl_num_aggre>1)
             if (step+1) % ctl_num_aggre == 0 or (step+1)==div_loader_len:
                 torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
