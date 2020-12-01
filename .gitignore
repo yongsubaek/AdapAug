@@ -1,6 +1,7 @@
 *.ipynb
 data/
 models/
+ray_results/
 binning/
 results/
 result/

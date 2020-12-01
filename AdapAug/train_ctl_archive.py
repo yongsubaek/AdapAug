@@ -359,7 +359,7 @@ def train_controller2(controller, config):
         for _ in range(repeat):
             # a_tracker, metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
             #                                 trace=True)
-            
+
             for step, (inputs, labels) in enumerate(valid_loader):
                 batch_size = len(labels)
                 if aff_step is not None and step >= aff_step: break
@@ -387,7 +387,7 @@ def train_controller2(controller, config):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                     pol_loss = -torch.min(surr1, surr2).sum()
-                pol_loss = pol_loss / (ctl_num_aggre if (step+1) < aff_agg_cnt else aff_agg_cnt % ctl_num_aggre)
+                pol_loss = pol_loss / ctl_num_aggre
                 pol_loss.backward(retain_graph=ctl_num_aggre>1)
                 if (step+1) % ctl_num_aggre == 0 or (step+1)==aff_agg_cnt:
                     torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
@@ -441,7 +441,7 @@ def train_controller2(controller, config):
                 surr1 = ratios * advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2).sum()
-            pol_loss = pol_loss / (ctl_num_aggre if (step+1) < len(total_loader) else (len(total_loader)-div_step) % ctl_num_aggre)
+            pol_loss = pol_loss / ctl_num_aggre
             pol_loss.backward(retain_graph=ctl_num_aggre>1)
             if (step+1) % ctl_num_aggre == 0 or (step+1)==len(total_loader):
                 torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
