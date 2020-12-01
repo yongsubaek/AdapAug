@@ -27,7 +27,7 @@ from theconf import Config as C, ConfigArgumentParser
 from AdapAug.controller import Controller
 from AdapAug.train_ctl import *
 import csv, random
-import warning
+import warnings
 warnings.filterwarnings("ignore")
 
 logger = get_logger('Adap AutoAugment')
@@ -40,13 +40,12 @@ def _get_path(dataset, model, tag, basemodel=True):
 
 # @ray.remote(num_gpus=1, max_calls=1)
 def train_ctl_wrapper(config, augment, reporter):
-    start_t = time.time()
     C.get()
-    C.get()['exp_name'] = ///
     C.get().conf = config
-    base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
+    C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{augment['aff_step']}_d{augment['div_step']}_cagg{augment['ctl_num_aggre']}"
+    base_path = os.path.join(augment['base_path'], C.get()['exp_name'])
     os.makedirs(base_path, exist_ok=True)
-    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
+    add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (augment['dataset'], augment['model_type'], args.cv_ratio)))
     augment['target_path'] = base_path + "/target_network.pt"
     augment['ctl_save_path'] = base_path + "/ctl_network.pt"
     if augment['version'] == 2:
@@ -55,6 +54,7 @@ def train_ctl_wrapper(config, augment, reporter):
         train_ctl = train_controller3
     else:
         train_ctl = train_controller
+    start_t = time.time()
     controller = Controller(n_subpolicy=augment['num_policy'], lstm_size=augment['lstm_size'], emb_size=augment['emb_size'],
                             operation_prob=0)
     trace, test_metrics = train_ctl(controller, augment)
@@ -90,7 +90,6 @@ if __name__ == '__main__':
     parser.add_argument('--random', action='store_true')
     parser.add_argument('--version', type=int, default=2)
     parser.add_argument('--childaug', type=str, default="clean")
-    parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
 
@@ -98,9 +97,10 @@ if __name__ == '__main__':
     parser.add_argument('--emb_size', type=int, default=32)
     parser.add_argument('--c_lr', type=float, default=0.00035)
     parser.add_argument('--c_step', type=int)
+    parser.add_argument('--cv_id', type=int)
 
     # parser.add_argument('--exp_name', type=str)
-    # parser.add_argument('--cv_id', type=int)
+    # parser.add_argument('--mode', type=str, default="ppo")
     # parser.add_argument('--a_step', type=int)
     # parser.add_argument('--d_step', type=int)
     # parser.add_argument('--c_agg', type=int, default=1)
@@ -175,17 +175,18 @@ if __name__ == '__main__':
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search, 'childnet_paths': paths,
             'num_policy': args.num_policy, 'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
-            'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num,
+            'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
+            'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
             'cv_id': args.cv_id,
             'ctl_train_steps': args.c_step,
             'c_lr': args.c_lr,
             }
 
     space = {
-            'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
             'mode': hp.choice('mode', ["ppo", "reinforce"]),
             'aff_step': hp.choice('aff_step', [1, 10, 100, None]),
             'div_step': hp.choice('div_step', [1, 10, 100, None]),
+            'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
             }
     num_process_per_gpu = 1
     name = args.search_name
@@ -200,7 +201,7 @@ if __name__ == '__main__':
         stop={'training_iteration': args.num_policy},
         resources_per_trial={'gpu': 1./num_process_per_gpu},
         config=ctl_config,
-        local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', name, "ray_results"),
+        local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
     analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
                     global_checkpoint_period=np.inf)
@@ -208,7 +209,7 @@ if __name__ == '__main__':
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     for result in results:
-        logger.info('loss=%.12f top1_test=%.4f %s' % (result.last_result['loss'], result.last_result['test_top1'], result.config[k] for k in space))
+        logger.info('loss=%.4f top1_test=%.4f %s' % (result.last_result['loss'], result.last_result['test_top1'], [result.config[k] for k in space]))
 
     # for k in trace:
     #     logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
