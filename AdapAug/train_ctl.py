@@ -269,7 +269,7 @@ def train_controller2(controller, config):
     ctl_train_steps = config['ctl_train_steps']
 
     eps_clip = 0.1
-    ctl_num_aggre = 1
+    ctl_num_aggre = config['ctl_num_aggre']
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
     cv_id = 0 if config['cv_id'] is None else config['cv_id']
@@ -343,7 +343,7 @@ def train_controller2(controller, config):
         div_step = len(total_loader) - ctl_train_steps
     else:
         aff_step = config['aff_step']
-        div_step = config['div_step'] if config['div_step'] is not None else len(total_loader)
+        div_step = len(total_loader) - config['div_step'] if config['div_step'] is not None else len(total_loader)
 
     test_metrics = []
     total_t_train_time = 0.
