@@ -9,6 +9,7 @@ from torch.distributions import Categorical
 import numpy as np
 from hyperopt import hp
 import ray
+from ray.tune.schedulers import AsyncHyperBandScheduler
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune.suggest import ConcurrencyLimiter
 from ray.tune import register_trainable, run_experiments, run, Experiment
@@ -59,8 +60,9 @@ def train_ctl_wrapper(config, augment, reporter):
                             operation_prob=0)
     trace, test_metrics = train_ctl(controller, augment)
     metrics = test_metrics[-1]
+    train_metrics = trace['diversity'] / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
+    reporter(train_acc=train_metrics['top1'], loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
     return metrics
 
 @ray.remote(num_gpus=1, max_calls=1)
@@ -184,16 +186,22 @@ if __name__ == '__main__':
 
     space = {
             'mode': hp.choice('mode', ["ppo", "reinforce"]),
-            'aff_step': hp.qloguniform('aff_step', 1, 5.2, 1),
-            'div_step': hp.qloguniform('div_step', 1, 6.1, 1),
-            'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 1, 6.1, 1),
-            'cv_id': hp.choice('cv_id', [0,1,2,3,4])
+            'aff_step': hp.qloguniform('aff_step', 0, 5.2, 1),
+            'div_step': hp.qloguniform('div_step', 0, 6.1, 1),
+            'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 0, 6.1, 1),
+            'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
             }
+    # best result of cifar10-wideresnet-28-10
+    current_best_params = [{'mode': 1, 'aff_step': 12, 'ctl_num_aggre': 162, 'div_step': 7, 'cv_id': 2}, # 97.61
+                           {'mode': 0, 'aff_step': 10, 'ctl_num_aggre': 6, 'div_step': 204, 'cv_id': 3}, # 97.53
+                           {'mode': 0, 'aff_step': 1, 'ctl_num_aggre': 1, 'div_step': 1, 'cv_id': None}, # 97.56
+                           ]
     num_process_per_gpu = 1
     name = args.search_name
-    register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
     reward_attr = 'test_top1'
-    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+    scheduler = AsyncHyperBandScheduler()
+    register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
+    algo = HyperOptSearch(space, metric=reward_attr, mode="max", points_to_evaluate=current_best_params)
     algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
@@ -209,8 +217,9 @@ if __name__ == '__main__':
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
+    results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
     for result in results:
-        logger.info('loss=%.4f top1_test=%.4f %s' % (result.last_result['loss'], result.last_result['test_top1'], [result.config[k] for k in space]))
+        logger.info('train_acc=%.4f loss=%.4f top1_test=%.4f %s' % (result.last_result['train_acc'], result.last_result['loss'], result.last_result['test_top1'], [result.config[k] for k in space]))
 
     # for k in trace:
     #     logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
