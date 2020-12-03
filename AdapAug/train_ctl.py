@@ -143,7 +143,7 @@ def train_controller(controller, config):
             'time': time.time()-st,
             'acc': metrics["top1"],
             'pol_loss': pol_loss.cpu().detach().item(),
-            'reward': rewards.mean().cpu().detach().item() if batch_multiplier>1 else rewards,
+            'reward': rewards,
             })
         logger.info(f"(Diversity)[Train Controller {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['diversity'] / 'cnt'}")
 
