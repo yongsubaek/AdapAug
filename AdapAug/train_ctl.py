@@ -113,10 +113,10 @@ def train_controller(controller, config):
         log_probs = torch.cat(log_probs)
         entropys = torch.cat(entropys)
         sampled_policies = list(torch.cat(sampled_policies).numpy()) if batch_multiplier > 1 else list(sampled_policies[0][0].numpy()) # (M, num_op, num_p, num_m)
-        _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, _transform=sampled_policies, batch_multiplier=batch_multiplier)
+        _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, _transform=sampled_policies, batch_multiplier=batch_multiplier)
         t_net.train()
         # training and return M normalized moving averages of losses
-        metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
+        metrics = run_epoch(t_net, total_loader, criterion if batch_multiplier>1 else _criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                             batch_multiplier=batch_multiplier)
         total_t_train_time += time.time() - ts
         logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
@@ -124,7 +124,7 @@ def train_controller(controller, config):
         st = time.time()
         controller.train()
         rewards = metrics['loss']
-        advantages = metrics.norm_loss.cuda() if batch_multiplier > 1 else rewards.cuda()
+        advantages = metrics.norm_loss.cuda() if batch_multiplier > 1 else rewards
         if mode == "reinforce":
             pol_loss = -1 * (log_probs * advantages)
         elif mode == 'ppo':
@@ -143,7 +143,7 @@ def train_controller(controller, config):
             'time': time.time()-st,
             'acc': metrics["top1"],
             'pol_loss': pol_loss.cpu().detach().item(),
-            'reward': rewards.mean().cpu().detach().item(),
+            'reward': rewards.mean().cpu().detach().item() if batch_multiplier>1 else rewards,
             })
         logger.info(f"(Diversity)[Train Controller {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['diversity'] / 'cnt'}")
 

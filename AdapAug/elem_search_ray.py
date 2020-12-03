@@ -188,9 +188,9 @@ if __name__ == '__main__':
                 }
         current_best_params = []
         # best result of cifar100-wideresnet-28-10
-        current_best_params = [{'mode': 0, 'aff_step': 2, 'div_step': 305, 'ctl_num_aggre': 19, 'cv_id': 0}, # 84.23
-                               {'mode': 0, 'aff_step': 158, 'div_step': 391, 'ctl_num_aggre': 391, 'cv_id': 0} # 84.21
-                               ]
+        # current_best_params = [{'mode': 0, 'aff_step': 2, 'div_step': 305, 'ctl_num_aggre': 19, 'cv_id': 0}, # 84.23
+        #                        {'mode': 0, 'aff_step': 158, 'div_step': 391, 'ctl_num_aggre': 391, 'cv_id': 0} # 84.21
+        #                        ]
         # best result of cifar10-wideresnet-28-10
         # current_best_params = [{'mode': 1, 'aff_step': 12, 'ctl_num_aggre': 162, 'div_step': 7, 'cv_id': 2}, # 97.61
         #                        {'mode': 0, 'aff_step': 10, 'ctl_num_aggre': 6, 'div_step': 204, 'cv_id': 3}, # 97.53
