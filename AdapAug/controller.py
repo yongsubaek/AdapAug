@@ -63,8 +63,8 @@ class Controller(nn.Module):
                 nn.Linear(64*2*2, self.emb_size)
             )
         else:
-            pass
-            # self.in_emb = nn.Embedding(1, self.lstm_size)  # Learn the starting input
+            self.in_emb = nn.Embedding(1, self.emb_size)  # Learn the starting input
+
         if self.n_group > 0:
             self.logit2group = nn.Sequential(
                 nn.Linear(self.lstm_size, self.n_group),
@@ -117,10 +117,12 @@ class Controller(nn.Module):
                 inputs = self.gr_emb(gr_ids)
                 log_probs.append(self.gr_prob_weight * gr_log_prob)
         else:
-            # inputs = self.in_emb.weight                     # [1, lstm_size]
             if self.n_group > 0:
                 gr_ids = torch.randint(low=0, high=self.n_group, size=(len(image),)).cuda()
                 inputs = self.gr_emb(gr_ids)
+            else:
+                inputs = self.in_emb.weight                     # [1, lstm_size]
+
         inputs = inputs.unsqueeze(0)                        # [1, batch(or 1), lstm_size]
         for i_subpol in range(self.n_subpolicy):
             subpolicy = []

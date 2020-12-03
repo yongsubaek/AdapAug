@@ -31,7 +31,6 @@ from AdapAug.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
 from warmup_scheduler import GradualWarmupScheduler
 import random, copy, numpy as np
 
-
 logger = get_logger('Fast AutoAugment')
 logger.setLevel(logging.INFO)
 
@@ -90,7 +89,7 @@ def gr_augment(imgs, gr_ids, gr_policies):
            "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1):
     if data_parallel:
         model = DataParallel(model).cuda()
     if verbose:
@@ -101,6 +100,8 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
     loss_ema = None
     metrics = Accumulator()
+    if batch_multiplier > 1:
+        ma_metrics = Accumulator() # moving averages of losses
     if trace:
         tracker = Tracker()
     cnt = 0
@@ -110,6 +111,10 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         steps += 1
         if trace:
             data, clean_data, log_prob, policy = data
+        if batch_multiplier > 1:
+            _shape = data.shape
+            data = torch.cat([ data[:,m] for m in range(batch_multiplier) ])
+            label = label.repeat(_shape[1])
         data, label = data.cuda(), label.cuda()
 
         if C.get().conf.get('mixup', 0.0) <= 0.0 or optimizer is None:
@@ -121,7 +126,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loss = loss_fn(preds, targets, shuffled_targets, lam)
             del shuffled_targets, lam
 
-        if trace:
+        if trace or batch_multiplier > 1:
             _loss = loss.detach().cpu()
             loss = loss.mean()
         if optimizer:
@@ -143,6 +148,13 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             'top5': top5.item() * len(data),
         })
         cnt += len(data)
+
+        if batch_multiplier > 1:
+            _losses = _loss.split(_shape[0])
+            # moving averages of losses
+            ma_metrics.add('cnt', _shape[0])
+            for m in range(batch_multiplier):
+                ma_metrics.add(f'loss_{m}', float(_losses[m].detach().cpu().sum()))
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
@@ -178,6 +190,12 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics / cnt)
 
     metrics /= cnt
+    # noramlized moving averages
+    if batch_multiplier > 1:
+        ma_metrics /= 'cnt'
+        norm_loss = torch.tensor([ ma_metrics[f'loss_{m}'] for m in range(batch_multiplier) ])
+        norm_loss = (norm_loss - norm_loss.mean()) / (norm_loss.std()+1e-3)
+        metrics.norm_loss = norm_loss
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
     if verbose:
