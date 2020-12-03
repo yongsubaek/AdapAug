@@ -101,6 +101,8 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
     loss_ema = None
     metrics = Accumulator()
+    if batch_multiplier > 1:
+        ma_metrics = Accumulator() # moving averages of losses
     if trace:
         tracker = Tracker()
     cnt = 0
@@ -110,35 +112,22 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         steps += 1
         if trace:
             data, clean_data, log_prob, policy = data
+        if batch_multiplier > 1:
+            _shape = data.shape
+            data = data.reshape(_shape[0]*_shape[1],*_shape[2:])
+            label = label.repeat(_shape[1])
         data, label = data.cuda(), label.cuda()
 
         if C.get().conf.get('mixup', 0.0) <= 0.0 or optimizer is None:
-            if batch_multiplier > 1:
-                for m in range(batch_multiplier):
-                    preds = model(data[:,m])
-                    loss = loss_fn(preds, label)
-                    top1, top5 = accuracy(preds, label, (1, 5))
-                    metrics.add_dict({
-                        f'loss_{m}': loss.item() * len(data),
-                        f'top1_{m}': top1.item() * len(data),
-                        f'top5_{m}': top5.item() * len(data),
-                    })
-            else:
-                preds = model(data)
-                loss = loss_fn(preds, label)
-                top1, top5 = accuracy(preds, label, (1, 5))
-                metrics.add_dict({
-                    'loss': loss.item() * len(data),
-                    'top1': top1.item() * len(data),
-                    'top5': top5.item() * len(data),
-                })
+            preds = model(data)
+            loss = loss_fn(preds, label)
         else:   # mixup
             data, targets, shuffled_targets, lam = mixup(data, label, C.get()['mixup'])
             preds = model(data)
             loss = loss_fn(preds, targets, shuffled_targets, lam)
             del shuffled_targets, lam
 
-        if trace:
+        if trace or batch_multiplier > 1:
             _loss = loss.detach().cpu()
             loss = loss.mean()
         if optimizer:
@@ -153,7 +142,20 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             if ema is not None:
                 ema(model, (epoch - 1) * total_steps + steps)
 
+        top1, top5 = accuracy(preds, label, (1, 5))
+        metrics.add_dict({
+            'loss': loss.item() * len(data),
+            'top1': top1.item() * len(data),
+            'top5': top5.item() * len(data),
+        })
         cnt += len(data)
+
+        if batch_multiplier > 1:
+            _losses = _loss.split(_shape[0])
+            # moving averages of losses
+            ma_metrics.add('cnt', _shape[0])
+            for m in range(batch_multiplier):
+                ma_metrics.add(f'loss_{m}', float(_losses[0].detach().cpu().sum()))
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
@@ -182,13 +184,19 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             #     scheduler.step()
         del preds, loss, top1, top5, data, label
 
-    metrics /= cnt
     if tqdm_disabled and verbose:
         if optimizer:
-            logger.info('[%s %03d/%03d] %s lr=%.6f', desc_default, epoch, C.get()['epoch'], metrics, optimizer.param_groups[0]['lr'])
+            logger.info('[%s %03d/%03d] %s lr=%.6f', desc_default, epoch, C.get()['epoch'], metrics / cnt, optimizer.param_groups[0]['lr'])
         else:
-            logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics)
+            logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics / cnt)
 
+    metrics /= cnt
+    # noramlized moving averages
+    if batch_multiplier > 1:
+        ma_metrics /= 'cnt'
+        norm_loss = torch.tensor([ ma_metrics[f'loss_{m}'] for m in range(batch_multiplier) ])
+        norm_loss = (norm_loss - norm_loss.mean()) / norm_loss.std()
+        metrics.norm_loss = norm_loss
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
     if verbose:

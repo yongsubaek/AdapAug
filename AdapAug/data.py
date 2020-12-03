@@ -156,6 +156,7 @@ class AdapAugData(Dataset):
         self.multi_policies = multi_policies
         self.log_probs = None
         self.batch_multiplier = batch_multiplier
+        self.policies = None
 
     def __len__(self):
         return len(self.data)
@@ -173,7 +174,6 @@ class AdapAugData(Dataset):
         # doing this so that it is consistent with all other datasets
         # to return a PIL Image
         img = Image.fromarray(img)
-
         if self.transform is not None:
             if self.policies is not None:
                 log_prob = self.log_probs[index]
@@ -193,9 +193,9 @@ class AdapAugData(Dataset):
                 if self.batch_multiplier > 1:
                     imgs = []
                     for policy in self.multi_policies:
-                        img = Augmentation(policy)(img)
-                        img = self.transform(img)
-                        imgs.append(img) # [M, 3, 32, 32]
+                        _img = Augmentation(policy)(img)
+                        _img = self.transform(_img)
+                        imgs.append(_img) # [M, 3, 32, 32]
                     img = torch.stack(imgs)
                 else:
                     img = self.transform(img)

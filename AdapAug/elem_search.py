@@ -152,7 +152,7 @@ if __name__ == '__main__':
     parser.add_argument('--d_step', type=int)
     parser.add_argument('--c_agg', type=int, default=1)
     parser.add_argument('--M', type=int, default=1)
-    parser.add_argument('--image_input', action='store_true')
+    parser.add_argument('--no_img', action='store_true')
 
 
     args = parser.parse_args()
@@ -224,7 +224,7 @@ if __name__ == '__main__':
     target_path = base_path + "/target_network.pt"
     ctl_save_path = base_path + "/ctl_network.pt"
     controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size,
-                            operation_prob=0, img_input=args.image_input).cuda()
+                            operation_prob=0, img_input=not args.no_img).cuda()
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
