@@ -151,6 +151,8 @@ if __name__ == '__main__':
     parser.add_argument('--a_step', type=int)
     parser.add_argument('--d_step', type=int)
     parser.add_argument('--c_agg', type=int, default=1)
+    parser.add_argument('--aw', type=float, default=1.)
+    parser.add_argument('--dw', type=float, default=1.)
     parser.add_argument('--M', type=int, default=1)
     parser.add_argument('--no_img', action='store_true')
 
@@ -230,6 +232,7 @@ if __name__ == '__main__':
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
             'childaug': args.childaug, 'cv_num': cv_num, 'cv_id': args.cv_id, 'ctl_train_steps': args.c_step,
             'mode': args.mode, 'c_lr': args.c_lr, 'aff_step': args.a_step, 'div_step': args.d_step,
+            'aff_w': args.aw, 'div_w': args.dw,
             'ctl_num_aggre': args.c_agg, "M": args.M,
     }
     if args.version == 2:
