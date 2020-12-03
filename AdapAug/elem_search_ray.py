@@ -42,7 +42,7 @@ def _get_path(dataset, model, tag, basemodel=True):
 def train_ctl_wrapper(config, augment, reporter):
     C.get()
     C.get().conf = config
-    C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{augment['aff_step']}_d{augment['div_step']}_cagg{augment['ctl_num_aggre']}"
+    C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
     base_path = os.path.join(augment['base_path'], C.get()['exp_name'])
     os.makedirs(base_path, exist_ok=True)
     add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (augment['dataset'], augment['model_type'], args.cv_ratio)))
@@ -99,11 +99,6 @@ if __name__ == '__main__':
     parser.add_argument('--c_step', type=int)
     parser.add_argument('--cv_id', type=int)
 
-    # parser.add_argument('--exp_name', type=str)
-    # parser.add_argument('--mode', type=str, default="ppo")
-    # parser.add_argument('--a_step', type=int)
-    # parser.add_argument('--d_step', type=int)
-    # parser.add_argument('--c_agg', type=int, default=1)
     parser.add_argument('--search_name', type=str)
     parser.add_argument('--num-search', type=int, default=4)
 
@@ -181,31 +176,44 @@ if __name__ == '__main__':
             'c_lr': args.c_lr,
             # 'cv_id': args.cv_id,
             }
+    if args.version == 2:
+        space = {
+                'mode': hp.choice('mode', ["ppo", "reinforce"]),
+                'aff_step': hp.qloguniform('aff_step', 0, 5.2, 1),
+                'div_step': hp.qloguniform('div_step', 0, 6.1, 1),
+                'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 0, 6.1, 1),
+                'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
+                }
+        # current_best_params = [{'mode': 0, 'aff_step': 5, 'div_step': 15, 'ctl_num_aggre': 1, 'cv_id': 0},
+        #                        {'mode': 1, 'aff_step': 0, 'div_step': 10, 'ctl_num_aggre': 1, 'cv_id': 0}
+        #                        ]
+        current_best_params = []
 
-    space = {
-            'mode': hp.choice('mode', ["ppo", "reinforce"]),
-            'aff_step': hp.qloguniform('aff_step', 1, 5.2, 1),
-            'div_step': hp.qloguniform('div_step', 1, 6.1, 1),
-            'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 1, 6.1, 1),
-            'cv_id': hp.choice('cv_id', [0,1,2,3,4])
-            }
+    elif args.version == 3:
+        space = {
+                'mode': hp.choice('mode', ["ppo", "reinforce"]),
+                'aff_step': hp.qloguniform('aff_w', 1e-6, 1e-0, 5e-6),
+                'div_step': hp.qloguniform('div_w', 1e-6, 1e-0, 5e-6),
+                'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
+                'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
+                }
+        current_best_params = []
     num_process_per_gpu = 1
     name = args.search_name
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
     reward_attr = 'test_top1'
-    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+    algo = HyperOptSearch(space, metric=reward_attr, mode="max", points_to_evaluate=current_best_params)
     algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
         run=name,
         num_samples=args.num_search,
         stop={'training_iteration': args.num_policy},
-        resources_per_trial={'gpu': 1./num_process_per_gpu},
+        resources_per_trial={'cpu': 4, 'gpu': 1./num_process_per_gpu},
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
-    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                    global_checkpoint_period=np.inf)
+    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
