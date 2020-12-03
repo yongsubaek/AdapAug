@@ -233,10 +233,13 @@ if __name__ == '__main__':
             'ctl_num_aggre': args.c_agg, "M": args.M,
     }
     if args.version == 2:
+        # epoch-wise alternating training
         train_ctl = train_controller2
     elif args.version == 3:
+        # training by weighted sum
         train_ctl = train_controller3
     else:
+        # Adversarial AutoAugment
         train_ctl = train_controller
 
     trace, t_net = train_ctl(controller, ctl_config)

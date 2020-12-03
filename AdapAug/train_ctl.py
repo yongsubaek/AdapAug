@@ -39,7 +39,7 @@ _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
 def train_controller(controller, config):
     """
-    Adv AA training scheme without image
+    Adversarial AutoAugment training scheme without image
     1. Training TargetNetwork 1 epoch
     2. Training Controller 1 step (Diversity)
     """
@@ -56,7 +56,6 @@ def train_controller(controller, config):
     eps_clip = 0.1
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
-    cv_id = 0 if config['cv_id'] is None else config['cv_id']
 
     controller.train()
     c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
@@ -124,14 +123,15 @@ def train_controller(controller, config):
         ## Diversity Training from TargetNetwork trace
         st = time.time()
         controller.train()
-        rewards = metrics.norm_loss.cuda() if batch_multiplier > 1 else metrics['loss'].cuda()
+        rewards = metrics['loss']
+        advantages = metrics.norm_loss.cuda() if batch_multiplier > 1 else rewards.cuda()
         if mode == "reinforce":
-            pol_loss = -1 * (log_probs * rewards)
+            pol_loss = -1 * (log_probs * advantages)
         elif mode == 'ppo':
             old_log_probs = log_probs.detach()
             ratios = (log_probs - old_log_probs).exp()
-            surr1 = ratios * rewards
-            surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * rewards
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
             pol_loss = -torch.min(surr1, surr2)
         pol_loss = (pol_loss + ctl_entropy_w * entropys).mean()
         pol_loss.backward()
@@ -166,15 +166,12 @@ def train_controller(controller, config):
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'div_trace': dict(trace['diversity'].trace),
                         }, ctl_save_path)
-        if epoch < C.get()['epoch']-1:
-            for k in trace:
-                trace[k].reset_accum()
     # C.get()["aug"] = ori_aug
     return trace, test_metrics
 
 def train_controller2(controller, config):
     """
-    Adv AA training scheme
+    Adv AA training scheme with image
     0. Training Controller (Affinity)
     1. Training TargetNetwork 1 epoch
     2. Training Controller 1 epoch (Diversity)

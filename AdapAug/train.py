@@ -31,7 +31,6 @@ from AdapAug.aug_mixup import CrossEntropyMixUpLabelSmooth, mixup
 from warmup_scheduler import GradualWarmupScheduler
 import random, copy, numpy as np
 
-
 logger = get_logger('Fast AutoAugment')
 logger.setLevel(logging.INFO)
 
@@ -114,7 +113,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             data, clean_data, log_prob, policy = data
         if batch_multiplier > 1:
             _shape = data.shape
-            data = data.reshape(_shape[0]*_shape[1],*_shape[2:])
+            data = torch.cat([ data[:,m] for m in range(batch_multiplier) ])
             label = label.repeat(_shape[1])
         data, label = data.cuda(), label.cuda()
 
@@ -155,7 +154,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             # moving averages of losses
             ma_metrics.add('cnt', _shape[0])
             for m in range(batch_multiplier):
-                ma_metrics.add(f'loss_{m}', float(_losses[0].detach().cpu().sum()))
+                ma_metrics.add(f'loss_{m}', float(_losses[m].detach().cpu().sum()))
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
@@ -195,7 +194,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     if batch_multiplier > 1:
         ma_metrics /= 'cnt'
         norm_loss = torch.tensor([ ma_metrics[f'loss_{m}'] for m in range(batch_multiplier) ])
-        norm_loss = (norm_loss - norm_loss.mean()) / norm_loss.std()
+        norm_loss = (norm_loss - norm_loss.mean()) / (norm_loss.std()+1e-3)
         metrics.norm_loss = norm_loss
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']

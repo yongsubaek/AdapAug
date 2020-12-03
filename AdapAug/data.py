@@ -183,8 +183,8 @@ class AdapAugData(Dataset):
                     for pol in policy:
                         aug_img = Augmentation(pol)(img)
                         aug_img = self.transform(aug_img)
-                        aug_imgs.append(aug_img) # [M, 3, 32, 32]
-                    aug_img =  torch.stack(aug_imgs)
+                        aug_imgs.append(aug_img)
+                    aug_img =  torch.stack(aug_imgs) # [M, 3, 32, 32]
                 else:
                     aug_img = Augmentation(policy)(img)
                     aug_img = self.transform(aug_img)
@@ -195,8 +195,8 @@ class AdapAugData(Dataset):
                     for policy in self.multi_policies:
                         _img = Augmentation(policy)(img)
                         _img = self.transform(_img)
-                        imgs.append(_img) # [M, 3, 32, 32]
-                    img = torch.stack(imgs)
+                        imgs.append(_img)
+                    img = torch.stack(imgs) # [M, 3, 32, 32]
                 else:
                     img = self.transform(img)
 
