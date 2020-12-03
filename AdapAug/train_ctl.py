@@ -511,7 +511,7 @@ def train_controller3(controller, config):
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
-        _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
+        _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
         t_net.train()
         t_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True)
@@ -530,8 +530,8 @@ def train_controller3(controller, config):
         a_baseline = ExponentialMovingAverage(ctl_ema_weight)
         d_baseline = ExponentialMovingAverage(ctl_ema_weight)
         ## TODO: Baseline tracing
-        a_warmup = min(0, aff_loader_len - ctl_train_steps)
-        d_warmup = min(0, div_loader_len - ctl_train_steps)
+        a_warmup = min(0, aff_loader_len - ctl_train_steps) if ctl_train_steps is not None else 0
+        d_warmup = min(0, div_loader_len - ctl_train_steps) if ctl_train_steps is not None else 0
         with torch.no_grad():
             for a_step in range(a_warmup):
                 a_inputs, a_labels = a_dict['clean_data'][a_step]
@@ -543,45 +543,45 @@ def train_controller3(controller, config):
                 d_reward = t_dict['loss'][d_step].cuda()
                 d_baseline.update(d_reward.mean())
         for step in range(ctl_train_steps):
-            # get affinity loss
+            # Get affinity loss
             st = time.time()
             a_step = (a_warmup + step)%aff_loader_len
-            a_inputs, a_labels = a_dict['clean_data'][a_step]
-            a_batch_size = len(a_labels)
-            a_inputs, a_labels = a_inputs.cuda(), a_labels.cuda()
-            a_aug_loss = a_dict['loss'][a_step].cuda()
+            inputs, labels = a_dict['clean_data'][a_step]
+            a_batch_size = len(labels)
+            inputs, labels = inputs.cuda(), labels.cuda()
+            aug_loss = a_dict['loss'][a_step].cuda()
             a_policy = a_dict['policy'][a_step].cuda()
             a_top1 = a_dict['acc'][a_step]
-            a_log_probs, a_entropys, _ = controller(a_inputs, a_policy)
+            log_probs, entropys, _ = controller(inputs, a_policy)
             with torch.no_grad():
-                clean_loss = criterion(childnet(a_inputs), a_labels) # clean data loss
-                a_reward = clean_loss.detach() - a_aug_loss
+                clean_loss = criterion(childnet(inputs), labels) # clean data loss
+                a_reward = clean_loss.detach() - aug_loss
                 a_baseline.update(a_reward.mean())
-                a_advantages = a_reward - baseline.value()
+                a_advantages = a_reward - a_baseline.value()
                 a_advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
                 a_pol_loss = -1 * (log_probs * a_advantages).sum() #scalar tensor
             elif mode == 'ppo':
-                old_log_probs = t_dict['log_probs'][step].cuda()
+                old_log_probs = t_dict['log_probs'][a_step].cuda()
                 ratios = (log_probs - old_log_probs).exp()
                 surr1 = ratios * a_advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * a_advantages
                 a_pol_loss = -torch.min(surr1, surr2).sum()
             a_loss = aff_w * a_pol_loss
-            # get diversity loss
+            # Get diversity loss
             d_step = (d_warmup + step)%div_loader_len
-            d_inputs, d_labels = t_dict['clean_data'][d_step]
-            d_batch_size = len(d_labels)
-            d_inputs, d_labels = d_inputs.cuda(), d_labels.cuda()
+            inputs, labels = t_dict['clean_data'][d_step]
+            d_batch_size = len(labels)
+            inputs, labels = inputs.cuda(), labels.cuda()
             d_aug_loss = t_dict['loss'][d_step].cuda()
             d_policy = t_dict['policy'][d_step].cuda()
             d_top1 = t_dict['acc'][d_step]
-            d_log_probs, d_entropys, _ = controller(d_inputs, d_policy)
+            log_probs, entropys, _ = controller(inputs, d_policy)
             with torch.no_grad():
-                # clean_loss = criterion(childnet(a_inputs), a_labels) # clean data loss
+                # clean_loss = criterion(childnet(inputs), labels) # clean data loss
                 d_reward = d_aug_loss #- clean_loss.detach()
                 d_baseline.update(d_reward.mean())
-                d_advantages = d_reward - baseline.value()
+                d_advantages = d_reward - d_baseline.value()
                 d_advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
                 d_pol_loss = -1 * (log_probs * d_advantages).sum() #scalar tensor
@@ -594,7 +594,7 @@ def train_controller3(controller, config):
             d_loss = div_w * d_pol_loss
             pol_loss = a_loss + d_loss
             if (step+1)==ctl_train_steps:
-                length = ctl_num_aggre if aff_train_len % ctl_num_aggre == 0 else ctl_train_steps % ctl_num_aggre
+                length = (ctl_train_steps-1) % ctl_num_aggre + 1
                 pol_loss = pol_loss / length
             else:
                 pol_loss = pol_loss / ctl_num_aggre
@@ -619,8 +619,8 @@ def train_controller3(controller, config):
                 'reward': d_reward.sum().cpu().detach().item(),
                 'advantages': d_advantages.sum().cpu().detach().item()
                 })
-        logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d}] {trace['affinity'] / 'cnt'}")
-        logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d}] {trace['diversity'] / 'cnt'}")
+        logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
+        logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'] / 'cnt'}")
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             # TargetNetwork Test
@@ -677,6 +677,22 @@ class ExponentialMovingAverage(object):
   def value(self):
     """Return the current value of the moving average"""
     return self._numerator / self._denominator
+
+class MovingAverage(object):
+  """Class that maintains an exponential moving average."""
+
+  def __init__(self, dummy=None):
+    self._numerator   = 0
+    self._denominator = 0
+
+  def update(self, value):
+    self._numerator += value
+    self._denominator += 1
+
+  def value(self):
+    """Return the current value of the moving average"""
+    return self._numerator / self._denominator
+
 
 class UnNormalize(object):
     def __init__(self, mean=_CIFAR_MEAN, std=_CIFAR_STD):
