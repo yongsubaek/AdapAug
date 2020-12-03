@@ -151,6 +151,9 @@ if __name__ == '__main__':
     parser.add_argument('--a_step', type=int)
     parser.add_argument('--d_step', type=int)
     parser.add_argument('--c_agg', type=int, default=1)
+    parser.add_argument('--M', type=int, default=1)
+    parser.add_argument('--image_input', action='store_true')
+
 
     args = parser.parse_args()
     torch.backends.cudnn.benchmark = True
@@ -221,13 +224,13 @@ if __name__ == '__main__':
     target_path = base_path + "/target_network.pt"
     ctl_save_path = base_path + "/ctl_network.pt"
     controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size,
-                            operation_prob=0).cuda()
+                            operation_prob=0, img_input=args.image_input).cuda()
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
             'childaug': args.childaug, 'cv_num': cv_num, 'cv_id': args.cv_id, 'ctl_train_steps': args.c_step,
             'mode': args.mode, 'c_lr': args.c_lr, 'aff_step': args.a_step, 'div_step': args.d_step,
-            'ctl_num_aggre': args.c_agg,
+            'ctl_num_aggre': args.c_agg, "M": args.M,
     }
     if args.version == 2:
         train_ctl = train_controller2

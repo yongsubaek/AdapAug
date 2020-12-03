@@ -90,7 +90,7 @@ def gr_augment(imgs, gr_ids, gr_policies):
            "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1):
     if data_parallel:
         model = DataParallel(model).cuda()
     if verbose:
@@ -113,8 +113,25 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         data, label = data.cuda(), label.cuda()
 
         if C.get().conf.get('mixup', 0.0) <= 0.0 or optimizer is None:
-            preds = model(data)
-            loss = loss_fn(preds, label)
+            if batch_multiplier > 1:
+                for m in range(batch_multiplier):
+                    preds = model(data[:,m])
+                    loss = loss_fn(preds, label)
+                    top1, top5 = accuracy(preds, label, (1, 5))
+                    metrics.add_dict({
+                        f'loss_{m}': loss.item() * len(data),
+                        f'top1_{m}': top1.item() * len(data),
+                        f'top5_{m}': top5.item() * len(data),
+                    })
+            else:
+                preds = model(data)
+                loss = loss_fn(preds, label)
+                top1, top5 = accuracy(preds, label, (1, 5))
+                metrics.add_dict({
+                    'loss': loss.item() * len(data),
+                    'top1': top1.item() * len(data),
+                    'top5': top5.item() * len(data),
+                })
         else:   # mixup
             data, targets, shuffled_targets, lam = mixup(data, label, C.get()['mixup'])
             preds = model(data)
@@ -136,12 +153,6 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             if ema is not None:
                 ema(model, (epoch - 1) * total_steps + steps)
 
-        top1, top5 = accuracy(preds, label, (1, 5))
-        metrics.add_dict({
-            'loss': loss.item() * len(data),
-            'top1': top1.item() * len(data),
-            'top5': top5.item() * len(data),
-        })
         cnt += len(data)
         if trace:
             tracker.add_dict({
@@ -171,13 +182,13 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             #     scheduler.step()
         del preds, loss, top1, top5, data, label
 
+    metrics /= cnt
     if tqdm_disabled and verbose:
         if optimizer:
-            logger.info('[%s %03d/%03d] %s lr=%.6f', desc_default, epoch, C.get()['epoch'], metrics / cnt, optimizer.param_groups[0]['lr'])
+            logger.info('[%s %03d/%03d] %s lr=%.6f', desc_default, epoch, C.get()['epoch'], metrics, optimizer.param_groups[0]['lr'])
         else:
-            logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics / cnt)
+            logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics)
 
-    metrics /= cnt
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
     if verbose:
