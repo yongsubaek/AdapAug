@@ -448,8 +448,6 @@ def train_controller3(controller, config):
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
     cv_id = 0 if config['cv_id'] is None else config['cv_id']
-    ctl_train_steps = config['ctl_train_steps']
-    ctl_num_aggre = config['ctl_num_aggre']
     aff_w = config['aff_w']
     div_w = config['div_w']
     aff_step = config['aff_step']
@@ -515,6 +513,7 @@ def train_controller3(controller, config):
         logger.info('------Train Controller from scratch------')
     ### Training Loop
     test_metrics = []
+    # policies = []
     total_t_train_time = 0.
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
@@ -531,6 +530,7 @@ def train_controller3(controller, config):
         a_tracker, _ = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
                                  trace=True, get_clean_loss=True)
         a_dict = a_tracker.get_dict()
+        # policies.append(d_dict['policy'])
         ## Get Affinity & Diversity Rewards from traces
         with torch.no_grad():
             d_rewards = torch.stack(d_dict['loss']).cuda() # [train_len_d, batch_d]
@@ -636,7 +636,7 @@ def train_controller3(controller, config):
                         'epoch': epoch,
                         'model':t_net.state_dict(),
                         'optimizer_state_dict': t_optimizer.state_dict(),
-                        'policy': t_dict['policy'],
+                        'policy': d_dict['policy'],
                         'test_metrics': test_metrics
                         }, target_path)
             torch.save({

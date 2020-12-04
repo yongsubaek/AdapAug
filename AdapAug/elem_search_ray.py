@@ -43,18 +43,20 @@ def _get_path(dataset, model, tag, basemodel=True):
 def train_ctl_wrapper(config, augment, reporter):
     C.get()
     C.get().conf = config
-    C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
+    if augment['version'] == 2:
+        train_ctl = train_controller2
+        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
+    elif augment['version'] == 3:
+        train_ctl = train_controller3
+        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
+    else:
+        train_ctl = train_controller
+
     base_path = os.path.join(augment['base_path'], C.get()['exp_name'])
     os.makedirs(base_path, exist_ok=True)
     add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (augment['dataset'], augment['model_type'], args.cv_ratio)))
     augment['target_path'] = base_path + "/target_network.pt"
     augment['ctl_save_path'] = base_path + "/ctl_network.pt"
-    if augment['version'] == 2:
-        train_ctl = train_controller2
-    elif augment['version'] == 3:
-        train_ctl = train_controller3
-    else:
-        train_ctl = train_controller
     start_t = time.time()
     controller = Controller(n_subpolicy=augment['num_policy'], lstm_size=augment['lstm_size'], emb_size=augment['emb_size'],
                             operation_prob=0)
@@ -94,25 +96,21 @@ if __name__ == '__main__':
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
-
     parser.add_argument('--lstm_size', type=int, default=100)
     parser.add_argument('--emb_size', type=int, default=32)
     parser.add_argument('--c_lr', type=float, default=0.00035)
     parser.add_argument('--c_step', type=int)
+    parser.add_argument('--a_step', type=int)
+    parser.add_argument('--d_step', type=int)
     parser.add_argument('--cv_id', type=int)
-
-    parser.add_argument('--search_name', type=str)
     parser.add_argument('--num-search', type=int, default=4)
+    parser.add_argument('--search_name', type=str)
 
     args = parser.parse_args()
     torch.backends.cudnn.benchmark = True
     if args.decay > 0:
         logger.info('decay=%.4f' % args.decay)
         C.get()['optimizer']['decay'] = args.decay
-    # C.get()['exp_name'] = args.exp_name
-    # base_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models', C.get()['exp_name'])
-    # os.makedirs(base_path, exist_ok=True)
-    # add_filehandler(logger, os.path.join(base_path, '%s_%s_cv%.1f.log' % (C.get()['dataset'], C.get()['model']['type'], args.cv_ratio)))
     logger.info('configuration...')
     logger.info(json.dumps(C.get().conf, sort_keys=True, indent=4))
     cv_num = args.cv_num
@@ -171,14 +169,15 @@ if __name__ == '__main__':
 
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search, 'childnet_paths': paths,
-            'num_policy': args.num_policy, 'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
+            'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
-            'ctl_train_steps': args.c_step,
-            'c_lr': args.c_lr,
+            'ctl_train_steps': args.c_step, 'c_lr': args.c_lr,
             # 'cv_id': args.cv_id,
+            # 'num_policy': args.num_policy,
             }
     if args.version == 2:
+        ctl_config['num_policy'] = args.num_policy
         space = {
                 'mode': hp.choice('mode', ["ppo", "reinforce"]),
                 'aff_step': hp.qloguniform('aff_step', 0, 5.2, 1),
@@ -196,15 +195,17 @@ if __name__ == '__main__':
         #                        {'mode': 0, 'aff_step': 10, 'ctl_num_aggre': 6, 'div_step': 204, 'cv_id': 3}, # 97.53
         #                        {'mode': 0, 'aff_step': 1, 'ctl_num_aggre': 1, 'div_step': 1, 'cv_id': None}, # 97.56
         #                        ]
-
-
     elif args.version == 3:
+        ctl_config['cv_id'] = args.cv_id
+        ctl_config['aff_step'] = args.a_step
+        ctl_config['div_step'] = args.d_step
         space = {
                 'mode': hp.choice('mode', ["ppo", "reinforce"]),
-                'aff_w': hp.qloguniform('aff_w', 1e-3, 1e+2, 5e-3),
-                'div_w': hp.qloguniform('div_w', 1e-3, 1e+2, 5e-3),
+                'aff_w': hp.choice('aff_w', [1e-3, 1e-1, 1e-0, 1e+1, 1e+3]),
+                'div_w': hp.choice('div_w', [1e-3, 1e-1, 1e-0, 1e+1, 1e+3]),
                 'reward_type': hp.choice('reward_type', [1,2,3]),
-                'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
+                # 'cv_id': hp.choice('cv_id', [0,1,2,3,4,None]),
+                'num_policy': hp.choice('num_policy', [2, 5])
                 }
         current_best_params = []
     num_process_per_gpu = 1
