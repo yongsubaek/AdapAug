@@ -69,9 +69,9 @@ def train_controller(controller, config):
     criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0), reduction="batched_sum").cuda()
     _criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0)).cuda()
     if batch_multiplier > 1:
-        t_net = DistributedDataParallel(t_net).cuda()
+        t_net = DataParallel(t_net).cuda()
         if controller.img_input:
-            controller = DistributedDataParallel(controller).cuda()
+            controller = DataParallel(controller).cuda()
     trace = {'diversity': Tracker()}
     # load TargetNetwork weights
     if load_search and os.path.isfile(target_path):
