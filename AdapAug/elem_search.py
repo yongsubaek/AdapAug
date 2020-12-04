@@ -245,11 +245,11 @@ if __name__ == '__main__':
         # Adversarial AutoAugment
         train_ctl = train_controller
 
-    trace, t_net = train_ctl(controller, ctl_config)
+    trace, metrics = train_ctl(controller, ctl_config)
     # test t_net
     logger.info('getting results...')
     for k in trace:
-        logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
+        logger.info(f"{k}\n{json.dumps(metrics[-1])}")
 
     # Affinity Calculation
     # augment = {

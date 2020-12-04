@@ -36,6 +36,9 @@ class Tracker:
     def items(self):
         return self.accum.items()
 
+    def last(self):
+        return dict( [ (k,v[-1]) for k,v in self.get_dict().items()])
+
     def __str__(self):
         repr = ""
         for k, v in self.items():
