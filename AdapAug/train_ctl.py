@@ -53,7 +53,7 @@ def train_controller(controller, config):
     load_search = config['load_search']
     batch_multiplier = config['M']
 
-    eps_clip = 0.1
+    eps_clip = 0.2
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
 
@@ -99,6 +99,7 @@ def train_controller(controller, config):
     ### Training Loop
     test_metrics = []
     total_t_train_time = 0.
+    baseline = ExponentialMovingAverage(ctl_ema_weight)
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
@@ -124,7 +125,11 @@ def train_controller(controller, config):
         st = time.time()
         controller.train()
         rewards = metrics['loss']
-        advantages = metrics.norm_loss.cuda() if batch_multiplier > 1 else rewards
+        if batch_multiplier > 1:
+            advantages = metrics.norm_loss.cuda()
+        else:
+            baseline.update(rewards)
+            advantages = rewards - baseline.value()
         if mode == "reinforce":
             pol_loss = -1 * (log_probs * advantages)
         elif mode == 'ppo':
@@ -133,7 +138,7 @@ def train_controller(controller, config):
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
             pol_loss = -torch.min(surr1, surr2)
-        pol_loss = (pol_loss + ctl_entropy_w * entropys).mean()
+        pol_loss = (pol_loss - ctl_entropy_w * entropys).mean()
         pol_loss.backward()
         torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
         c_optimizer.step()
@@ -191,7 +196,7 @@ def train_controller2(controller, config):
     ctl_train_steps = config['ctl_train_steps']
     batch_multiplier = config['M']
 
-    eps_clip = 0.1
+    eps_clip = 0.2
     ctl_num_aggre = config['ctl_num_aggre']
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
@@ -298,7 +303,6 @@ def train_controller2(controller, config):
                     baseline.update(reward.mean())
                     if step < aff_loader_len - aff_train_len: continue
                     advantages = reward - baseline.value()
-                    advantages += ctl_entropy_w * entropys
                 if mode == "reinforce":
                     pol_loss = -1 * (log_probs * advantages).sum() #scalar tensor
                 elif mode == 'ppo':
@@ -307,6 +311,7 @@ def train_controller2(controller, config):
                     surr1 = ratios * advantages
                     surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                     pol_loss = -torch.min(surr1, surr2).sum()
+                pol_loss -= ctl_entropy_w * entropys
                 if (step+1)==aff_loader_len:
                     length = ctl_num_aggre if aff_train_len % ctl_num_aggre == 0 else aff_train_len % ctl_num_aggre
                     pol_loss = pol_loss / length
@@ -354,7 +359,6 @@ def train_controller2(controller, config):
                 baseline.update(reward.mean())
                 if step < div_loader_len - div_train_len: continue
                 advantages = reward - baseline.value()
-                advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
                 pol_loss = -1 * (log_probs * advantages).sum() #scalar tensor
             elif mode == 'ppo':
@@ -363,6 +367,7 @@ def train_controller2(controller, config):
                 surr1 = ratios * advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2).sum()
+            pol_loss -= ctl_entropy_w * entropys
             if (step+1)==aff_loader_len:
                 length = ctl_num_aggre if aff_train_len % ctl_num_aggre == 0 else aff_train_len % ctl_num_aggre
                 pol_loss = pol_loss / length
@@ -441,7 +446,7 @@ def train_controller3(controller, config):
     load_search = config['load_search']
     childaug = config['childaug']
 
-    eps_clip = 0.1
+    eps_clip = 0.2
     ctl_entropy_w = 1e-5
     ctl_ema_weight = 0.95
     cv_id = 0 if config['cv_id'] is None else config['cv_id']
@@ -554,13 +559,12 @@ def train_controller3(controller, config):
             aug_loss = a_dict['loss'][a_step].cuda()
             a_policy = a_dict['policy'][a_step].cuda()
             a_top1 = a_dict['acc'][a_step]
-            log_probs, entropys, _ = controller(inputs, a_policy)
+            log_probs, a_entropys, _ = controller(inputs, a_policy)
             with torch.no_grad():
                 clean_loss = criterion(childnet(inputs), labels) # clean data loss
                 a_reward = clean_loss.detach() - aug_loss
                 a_baseline.update(a_reward.mean())
                 a_advantages = a_reward - a_baseline.value()
-                a_advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
                 a_pol_loss = -1 * (log_probs * a_advantages).sum() #scalar tensor
             elif mode == 'ppo':
@@ -569,7 +573,7 @@ def train_controller3(controller, config):
                 surr1 = ratios * a_advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * a_advantages
                 a_pol_loss = -torch.min(surr1, surr2).sum()
-            a_loss = aff_w * a_pol_loss
+            a_loss = aff_w * a_pol_loss - ctl_entropy_w * a_entropys
             # Get diversity loss
             d_step = (d_warmup + step)%div_loader_len
             inputs, labels = t_dict['clean_data'][d_step]
@@ -578,13 +582,12 @@ def train_controller3(controller, config):
             d_aug_loss = t_dict['loss'][d_step].cuda()
             d_policy = t_dict['policy'][d_step].cuda()
             d_top1 = t_dict['acc'][d_step]
-            log_probs, entropys, _ = controller(inputs, d_policy)
+            log_probs, d_entropys, _ = controller(inputs, d_policy)
             with torch.no_grad():
                 # clean_loss = criterion(childnet(inputs), labels) # clean data loss
                 d_reward = d_aug_loss #- clean_loss.detach()
                 d_baseline.update(d_reward.mean())
                 d_advantages = d_reward - d_baseline.value()
-                d_advantages += ctl_entropy_w * entropys
             if mode == "reinforce":
                 d_pol_loss = -1 * (log_probs * d_advantages).sum() #scalar tensor
             elif mode == 'ppo':
@@ -593,7 +596,7 @@ def train_controller3(controller, config):
                 surr1 = ratios * d_advantages
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * d_advantages
                 d_pol_loss = -torch.min(surr1, surr2).sum()
-            d_loss = div_w * d_pol_loss
+            d_loss = div_w * d_pol_loss - ctl_entropy_w * d_entropys
             pol_loss = a_loss + d_loss
             if (step+1)==ctl_train_steps:
                 length = (ctl_train_steps-1) % ctl_num_aggre + 1
