@@ -137,7 +137,7 @@ if __name__ == '__main__':
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--random', action='store_true')
     parser.add_argument('--version', type=int, default=1)
-    parser.add_argument('--childaug', type=str, default="clean")
+    parser.add_argument('--childaug', type=str, default="default")
     parser.add_argument('--mode', type=str, default="ppo")
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
@@ -155,6 +155,7 @@ if __name__ == '__main__':
     parser.add_argument('--dw', type=float, default=1.)
     parser.add_argument('--M', type=int, default=1)
     parser.add_argument('--no_img', action='store_true')
+    parser.add_argument('--r_type', type=int, default=1)
 
 
     args = parser.parse_args()
@@ -230,9 +231,10 @@ if __name__ == '__main__':
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,
-            'childaug': args.childaug, 'cv_num': cv_num, 'cv_id': args.cv_id, 'ctl_train_steps': args.c_step,
-            'mode': args.mode, 'c_lr': args.c_lr, 'aff_step': args.a_step, 'div_step': args.d_step,
-            'aff_w': args.aw, 'div_w': args.dw,
+            'childaug': args.childaug, 'mode': args.mode, 'c_lr': args.c_lr,
+            'cv_num': cv_num, 'cv_id': args.cv_id,
+            'ctl_train_steps': args.c_step, 'aff_step': args.a_step, 'div_step': args.d_step, # version 2
+            'aff_w': args.aw, 'div_w': args.dw, 'reward_type': args.r_type, # version 3
             'ctl_num_aggre': args.c_agg, "M": args.M,
     }
     if args.version == 2:

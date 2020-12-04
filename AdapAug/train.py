@@ -89,7 +89,7 @@ def gr_augment(imgs, gr_ids, gr_policies):
            "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
     return aug_imgs, applied_policy
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1, get_clean_loss=False):
     if data_parallel:
         model = DistributedDataParallel(model).cuda()
     if verbose:
@@ -126,8 +126,14 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loss = loss_fn(preds, targets, shuffled_targets, lam)
             del shuffled_targets, lam
 
+        if get_clean_loss:
+            with torch.no_grad():
+                clean_data = clean_data.cuda()
+                preds = model(clean_data)
+                clean_loss = loss_fn(preds, label).detach()
+
         if trace or batch_multiplier > 1:
-            _loss = loss.detach().cpu()
+            _loss = loss.detach()
             loss = loss.mean()
         if optimizer:
             loss += wd * (1. / 2.) * sum([torch.sum(p ** 2) for p in params_without_bn])
@@ -158,12 +164,14 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
-                'clean_data': (clean_data.detach().cpu(), label.detach().cpu()),
+                'clean_data': (clean_data.detach(), label.detach()),
                 'log_probs': log_prob,
                 'policy': policy,
                 'loss': _loss,
                 'acc': top1.item(),
             })
+            if get_clean_loss:
+                tracker.add('clean_loss', clean_loss)
         if loss_ema:
             loss_ema = loss_ema * 0.9 + loss.item() * 0.1
         else:
@@ -194,7 +202,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     if batch_multiplier > 1:
         ma_metrics /= 'cnt'
         norm_loss = torch.tensor([ ma_metrics[f'loss_{m}'] for m in range(batch_multiplier) ])
-        norm_loss = (norm_loss - norm_loss.mean()) / (norm_loss.std()+1e-3)
+        norm_loss = (norm_loss - norm_loss.mean()) / (norm_loss.std()+1e-6)
         metrics.norm_loss = norm_loss
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']

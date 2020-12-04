@@ -150,8 +150,6 @@ def train_controller(controller, config):
             'pol_loss': pol_loss.cpu().detach().item(),
             'reward': rewards,
             })
-        if batch_multiplier > 1:
-            trace['diversity'].add('normloss_std', advantages.detach().std().cpu().item())
         logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'].last()}")
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
@@ -431,7 +429,7 @@ def train_controller2(controller, config):
 
 def train_controller3(controller, config):
     """
-    Minimal Backward
+    Weighted Sum of Affinity and Diversity
     0. Training TargetNetwork 1 epoch
     1. Training Controller (weigheted sum of Affinity & Diversity)
     """
@@ -454,6 +452,9 @@ def train_controller3(controller, config):
     ctl_num_aggre = config['ctl_num_aggre']
     aff_w = config['aff_w']
     div_w = config['div_w']
+    aff_step = config['aff_step']
+    div_step = config['div_step']
+    reward_type = config["reward_type"]
     controller.train()
     c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
     # controller = DataParallel(controller).cuda()
@@ -520,112 +521,97 @@ def train_controller3(controller, config):
         ts = time.time()
         _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
         t_net.train()
-        t_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
-                                        trace=True)
+        d_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
+                                        trace=True, get_clean_loss=reward_type==2)
         total_t_train_time += time.time() - ts
         logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
-        t_dict = t_tracker.get_dict()
+        d_dict = d_tracker.get_dict()
         ## Childnet BackTracking
         _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, controller=controller, _transform=childaug)
         a_tracker, _ = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
-                                 trace=True)
+                                 trace=True, get_clean_loss=True)
         a_dict = a_tracker.get_dict()
-        ## Affinity & Diversity Training from traces
-        controller.train()
-        aff_loader_len = len(valid_loader)
-        div_loader_len = len(total_loader)
-        a_baseline = ExponentialMovingAverage(ctl_ema_weight)
-        d_baseline = ExponentialMovingAverage(ctl_ema_weight)
-        ## TODO: Baseline tracing
-        a_warmup = min(0, aff_loader_len - ctl_train_steps) if ctl_train_steps is not None else 0
-        d_warmup = min(0, div_loader_len - ctl_train_steps) if ctl_train_steps is not None else 0
+        ## Get Affinity & Diversity Rewards from traces
         with torch.no_grad():
-            for a_step in range(a_warmup):
-                a_inputs, a_labels = a_dict['clean_data'][a_step]
-                a_inputs, a_labels = a_inputs.cuda(), a_labels.cuda()
-                clean_loss = criterion(childnet(a_inputs), a_labels) # clean data loss
-                a_reward = clean_loss.detach() - a_dict['loss'][a_step].cuda()
-                a_baseline.update(a_reward.mean())
-            for d_step in range(d_warmup):
-                d_reward = t_dict['loss'][d_step].cuda()
-                d_baseline.update(d_reward.mean())
-        for step in range(ctl_train_steps):
-            # Get affinity loss
+            d_rewards = torch.stack(d_dict['loss']).cuda() # [train_len_d, batch_d]
+            a_rewards = torch.stack(a_dict['loss']).cuda() # [train_len_a, batch_a]
+            a_clean_loss = torch.stack(a_dict['clean_loss']).cuda()
+            a_rewards = a_clean_loss - a_rewards # affinity approximation (usually negative)
+            if reward_type > 1:
+                if reward_type == 2:
+                    d_clean_loss = torch.stack(d_dict['clean_loss']).cuda() # [train_len, batch]
+                    d_rewards = d_rewards - d_clean_loss # information gain
+                # normalization
+                d_rewards = (d_rewards - d_rewards.mean(0)) / (d_rewards.std(0) + 1e-6)
+                a_rewards = (a_rewards - a_rewards.mean(0)) / (a_rewards.std(0) + 1e-6)
+        # d_loss = 0.
+        # Get diversity loss
+        controller.train()
+        for step, reward in enumerate(d_rewards):
+            if div_step is not None and step >= div_step: break
             st = time.time()
-            a_step = (a_warmup + step)%aff_loader_len
-            inputs, labels = a_dict['clean_data'][a_step]
-            a_batch_size = len(labels)
+            inputs, labels = d_dict['clean_data'][step]
+            batch_size = len(labels)
             inputs, labels = inputs.cuda(), labels.cuda()
-            aug_loss = a_dict['loss'][a_step].cuda()
-            a_policy = a_dict['policy'][a_step].cuda()
-            a_top1 = a_dict['acc'][a_step]
-            log_probs, a_entropys, _ = controller(inputs, a_policy)
-            with torch.no_grad():
-                clean_loss = criterion(childnet(inputs), labels) # clean data loss
-                a_reward = clean_loss.detach() - aug_loss
-                a_baseline.update(a_reward.mean())
-                a_advantages = a_reward - a_baseline.value()
+            policy = d_dict['policy'][step].cuda()
+            top1 = d_dict['acc'][step]
+            log_probs, d_entropys, _ = controller(inputs, policy)
             if mode == "reinforce":
-                a_pol_loss = -1 * (log_probs * a_advantages).sum() #scalar tensor
+                pol_loss = -1 * (log_probs * reward)
             elif mode == 'ppo':
-                old_log_probs = t_dict['log_probs'][a_step].cuda()
+                old_log_probs = d_dict['log_probs'][step].cuda()
                 ratios = (log_probs - old_log_probs).exp()
-                surr1 = ratios * a_advantages
-                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * a_advantages
-                a_pol_loss = -torch.min(surr1, surr2).sum()
-            a_loss = aff_w * a_pol_loss - ctl_entropy_w * a_entropys
-            # Get diversity loss
-            d_step = (d_warmup + step)%div_loader_len
-            inputs, labels = t_dict['clean_data'][d_step]
-            d_batch_size = len(labels)
-            inputs, labels = inputs.cuda(), labels.cuda()
-            d_aug_loss = t_dict['loss'][d_step].cuda()
-            d_policy = t_dict['policy'][d_step].cuda()
-            d_top1 = t_dict['acc'][d_step]
-            log_probs, d_entropys, _ = controller(inputs, d_policy)
-            with torch.no_grad():
-                # clean_loss = criterion(childnet(inputs), labels) # clean data loss
-                d_reward = d_aug_loss #- clean_loss.detach()
-                d_baseline.update(d_reward.mean())
-                d_advantages = d_reward - d_baseline.value()
-            if mode == "reinforce":
-                d_pol_loss = -1 * (log_probs * d_advantages).sum() #scalar tensor
-            elif mode == 'ppo':
-                old_log_probs = t_dict['log_probs'][d_step].cuda()
-                ratios = (log_probs - old_log_probs).exp()
-                surr1 = ratios * d_advantages
-                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * d_advantages
-                d_pol_loss = -torch.min(surr1, surr2).sum()
-            d_loss = div_w * d_pol_loss - ctl_entropy_w * d_entropys
-            pol_loss = a_loss + d_loss
-            if (step+1)==ctl_train_steps:
-                length = (ctl_train_steps-1) % ctl_num_aggre + 1
-                pol_loss = pol_loss / length
-            else:
-                pol_loss = pol_loss / ctl_num_aggre
-            pol_loss.backward(retain_graph=ctl_num_aggre>1)
-            if (step+1) % ctl_num_aggre == 0 or (step+1)==ctl_train_steps:
-                torch.nn.utils.clip_grad_norm_(controller.parameters(), 1.0)
-                c_optimizer.step()
-                c_optimizer.zero_grad()
-            trace['affinity'].add_dict({
-                'cnt': a_batch_size,
-                'time': time.time()-st,
-                'acc': a_top1*a_batch_size,
-                'pol_loss': a_pol_loss.cpu().detach().item(),
-                'reward': a_reward.sum().cpu().detach().item(),
-                'advantages': a_advantages.sum().cpu().detach().item()
-                })
+                surr1 = ratios * reward
+                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * reward
+                pol_loss = -torch.min(surr1, surr2)
+            # d_loss += (div_w * pol_loss - ctl_entropy_w * d_entropys).sum()
+            d_loss = (div_w * pol_loss - ctl_entropy_w * d_entropys).mean()
+            d_loss.backward(retain_graph=True)
             trace['diversity'].add_dict({
-                'cnt': d_batch_size,
+                'cnt': batch_size,
                 'time': time.time()-st,
-                'acc': d_top1*d_batch_size,
-                'pol_loss': d_pol_loss.cpu().detach().item(),
-                'reward': d_reward.sum().cpu().detach().item(),
-                'advantages': d_advantages.sum().cpu().detach().item()
+                'acc': top1*batch_size,
+                'pol_loss': pol_loss.cpu().detach().sum().item(),
+                'reward': reward.cpu().detach().sum().item(),
                 })
-        logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
+        # d_loss /= sum(trace['diversity']['cnt'])
         logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'] / 'cnt'}")
+        # a_loss = 0.
+        # Get affinity loss
+        for step, reward in enumerate(a_rewards):
+            if aff_step is not None and step >= aff_step: break
+            st = time.time()
+            inputs, labels = a_dict['clean_data'][step]
+            batch_size = len(labels)
+            inputs, labels = inputs.cuda(), labels.cuda()
+            policy = a_dict['policy'][step].cuda()
+            top1 = a_dict['acc'][step]
+            log_probs, entropys, _ = controller(inputs, policy)
+            if mode == "reinforce":
+                pol_loss = -1 * (log_probs * reward)
+            elif mode == 'ppo':
+                old_log_probs = a_dict['log_probs'][step].cuda()
+                ratios = (log_probs - old_log_probs).exp()
+                surr1 = ratios * reward
+                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * reward
+                pol_loss = -torch.min(surr1, surr2)
+            # a_loss += (aff_w * pol_loss - ctl_entropy_w * entropys).sum()
+            a_loss = (aff_w * pol_loss - ctl_entropy_w * entropys).mean()
+            a_loss.backward(retain_graph=True)
+            trace['affinity'].add_dict({
+                'cnt': batch_size,
+                'time': time.time()-st,
+                'acc': top1*batch_size,
+                'pol_loss': pol_loss.cpu().detach().sum().item(),
+                'reward': reward.cpu().detach().sum().item(),
+                })
+        # a_loss /= sum(trace['affinity']['cnt'])
+        logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
+        # pol_loss = a_loss + d_loss
+        # pol_loss.backward()
+        torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+        c_optimizer.step()
+        c_optimizer.zero_grad()
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             # TargetNetwork Test
@@ -659,7 +645,6 @@ def train_controller3(controller, config):
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'aff_trace': dict(trace['affinity'].trace),
                         'div_trace': dict(trace['diversity'].trace),
-                        # 'test_trace': dict(trace['test'].trace)
                         }, ctl_save_path)
         if epoch < C.get()['epoch']-1:
             for k in trace:

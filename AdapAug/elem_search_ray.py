@@ -201,9 +201,9 @@ if __name__ == '__main__':
     elif args.version == 3:
         space = {
                 'mode': hp.choice('mode', ["ppo", "reinforce"]),
-                'aff_step': hp.qloguniform('aff_w', 1e-6, 1e-0, 5e-6),
-                'div_step': hp.qloguniform('div_w', 1e-6, 1e-0, 5e-6),
-                'ctl_num_aggre': hp.choice('ctl_num_aggre', [1, 10, 100, 400]),
+                'aff_w': hp.qloguniform('aff_w', 1e-3, 1e+2, 5e-3),
+                'div_w': hp.qloguniform('div_w', 1e-3, 1e+2, 5e-3),
+                'reward_type': hp.choice('reward_type', [1,2,3]),
                 'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
                 }
         current_best_params = []
