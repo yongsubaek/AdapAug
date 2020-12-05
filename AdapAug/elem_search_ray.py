@@ -60,11 +60,12 @@ def train_ctl_wrapper(config, augment, reporter):
     start_t = time.time()
     controller = Controller(n_subpolicy=augment['num_policy'], lstm_size=augment['lstm_size'], emb_size=augment['emb_size'],
                             operation_prob=0)
-    trace, test_metrics = train_ctl(controller, augment)
+    trace, train_metrics, test_metrics = train_ctl(controller, augment)
+    aff_metrics = train_metrics["affinity"][-1]
+    div_metrics = train_metrics["diversity"][-1]
     metrics = test_metrics[-1]
-    train_metrics = trace['diversity'] / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(train_acc=train_metrics['acc'], loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
+    reporter(train_acc=div_metrics['top1'], affinity=aff_metrics["top1"], diversity=div_metrics["loss"], test_loss=metrics['loss'], test_acc=metrics['top1'], elapsed_time=gpu_secs, done=True)
     return metrics
 
 @ray.remote(num_gpus=1, max_calls=1)
@@ -209,14 +210,14 @@ if __name__ == '__main__':
                 'cv_id': tune.choice([0,1,2,3,4,None]),
                 'num_policy': tune.choice([1, 2, 5]),
                 }
-        # current_best_params = []
+        current_best_params = []
         # best result of cifar100-wideresnet-28-10
-        current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 0, 'num_policy': 1}, # ['ppo', 10.0, 1000.0, 1, 0, 2]
-                               {'mode': 1, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 2, 'num_policy': 1}] # ['reinforce', 10.0, 1000.0, 3, 0, 2]
+        # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 0, 'num_policy': 1}, # ['ppo', 10.0, 1000.0, 1, 0, 2]
+        #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 2, 'num_policy': 1}] # ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
     num_process_per_gpu = 1
     name = args.search_name
-    reward_attr = 'test_top1'
+    reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
     algo = HyperOptSearch(points_to_evaluate=current_best_params)
@@ -238,8 +239,5 @@ if __name__ == '__main__':
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
     for result in results:
-        logger.info('train_acc=%.4f loss=%.4f top1_test=%.4f %s' % (result.last_result['train_acc'], result.last_result['loss'], result.last_result['test_top1'], [result.config[k] for k in space]))
-
-    # for k in trace:
-    #     logger.info(f"{k}\n{json.dumps((trace[k] / 'cnt').metrics)}")
+        logger.info('train_acc=%.4f affinity=%.4f diversity=%.4f test_loss=%.4f test_acc=%.4f %s' % (result.last_result['train_acc'], result.last_result['affinity'], result.last_result['diversity'], result.last_result['test_loss'], result.last_result['test_acc'], [result.config[k] for k in space]))
     logger.info(w)

@@ -512,6 +512,7 @@ def train_controller3(controller, config):
     else:
         logger.info('------Train Controller from scratch------')
     ### Training Loop
+    train_metrics = {"affinity":[], "diversity": []}
     test_metrics = []
     # policies = []
     total_t_train_time = 0.
@@ -520,15 +521,17 @@ def train_controller3(controller, config):
         ts = time.time()
         _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
         t_net.train()
-        d_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
+        d_tracker, d_metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True, get_clean_loss=reward_type==2)
         total_t_train_time += time.time() - ts
-        logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
+        logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {d_metrics}")
+        train_metrics["diversity"].append(d_metrics)
         d_dict = d_tracker.get_dict()
         ## Childnet BackTracking
         _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, controller=controller, _transform=childaug)
-        a_tracker, _ = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
+        a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
                                  trace=True, get_clean_loss=True)
+        train_metrics["affinity"].append(a_metrics)
         a_dict = a_tracker.get_dict()
         # policies.append(d_dict['policy'])
         ## Get Affinity & Diversity Rewards from traces
@@ -637,7 +640,7 @@ def train_controller3(controller, config):
                         'model':t_net.state_dict(),
                         'optimizer_state_dict': t_optimizer.state_dict(),
                         'policy': d_dict['policy'],
-                        'test_metrics': test_metrics
+                        'test_metrics': test_metrics,
                         }, target_path)
             torch.save({
                         'epoch': epoch,
@@ -645,12 +648,13 @@ def train_controller3(controller, config):
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'aff_trace': dict(trace['affinity'].trace),
                         'div_trace': dict(trace['diversity'].trace),
+                        'train_metrics': train_metrics,
                         }, ctl_save_path)
         if epoch < C.get()['epoch']-1:
             for k in trace:
                 trace[k].reset_accum()
     # C.get()["aug"] = ori_aug
-    return trace, test_metrics
+    return trace, train_metrics, test_metrics
 
 class ExponentialMovingAverage(object):
   """Class that maintains an exponential moving average."""
