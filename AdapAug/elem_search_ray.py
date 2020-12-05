@@ -7,12 +7,12 @@ from collections import OrderedDict, defaultdict, Counter
 import torch
 from torch.distributions import Categorical
 import numpy as np
-from hyperopt import hp
 import ray
+from ray import tune
 from ray.tune.schedulers import AsyncHyperBandScheduler
 from ray.tune.suggest.hyperopt import HyperOptSearch
 from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune import register_trainable, run_experiments, run, Experiment
+from ray.tune import register_trainable, run_experiments, run, Experiment, CLIReporter
 
 from tqdm import tqdm
 
@@ -64,7 +64,7 @@ def train_ctl_wrapper(config, augment, reporter):
     metrics = test_metrics[-1]
     train_metrics = trace['diversity'] / 'cnt'
     gpu_secs = (time.time() - start_t) * torch.cuda.device_count()
-    reporter(train_acc=train_metrics['top1'], loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
+    reporter(train_acc=train_metrics['acc'], loss=metrics['loss'], test_top1=metrics['top1'], elapsed_time=gpu_secs, done=True)
     return metrics
 
 @ray.remote(num_gpus=1, max_calls=1)
@@ -173,17 +173,17 @@ if __name__ == '__main__':
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
             'ctl_train_steps': args.c_step, 'c_lr': args.c_lr,
+            'num_policy': args.num_policy,
             # 'cv_id': args.cv_id,
             # 'num_policy': args.num_policy,
             }
     if args.version == 2:
-        ctl_config['num_policy'] = args.num_policy
         space = {
-                'mode': hp.choice('mode', ["ppo", "reinforce"]),
-                'aff_step': hp.qloguniform('aff_step', 0, 5.2, 1),
-                'div_step': hp.qloguniform('div_step', 0, 6.1, 1),
-                'ctl_num_aggre': hp.qloguniform('ctl_num_aggre', 0, 6.1, 1),
-                'cv_id': hp.choice('cv_id', [0,1,2,3,4,None])
+                'mode': tune.choice(["ppo", "reinforce"]),
+                'aff_step': tune.qloguniform(0, 2.21, 1),
+                'div_step': tune.qloguniform(0, 2.6, 1),
+                'ctl_num_aggre': tune.qloguniform(0, 2.6, 1),
+                'cv_id': tune.choice([0,1,2,3,4,None]),
                 }
         current_best_params = []
         # best result of cifar100-wideresnet-28-10
@@ -196,24 +196,30 @@ if __name__ == '__main__':
         #                        {'mode': 0, 'aff_step': 1, 'ctl_num_aggre': 1, 'div_step': 1, 'cv_id': None}, # 97.56
         #                        ]
     elif args.version == 3:
-        ctl_config['cv_id'] = args.cv_id
-        ctl_config['aff_step'] = args.a_step
-        ctl_config['div_step'] = args.d_step
-        space = {
-                'mode': hp.choice('mode', ["ppo", "reinforce"]),
-                'aff_w': hp.choice('aff_w', [1e-3, 1e-1, 1e-0, 1e+1, 1e+3]),
-                'div_w': hp.choice('div_w', [1e-3, 1e-1, 1e-0, 1e+1, 1e+3]),
-                'reward_type': hp.choice('reward_type', [1,2,3]),
-                # 'cv_id': hp.choice('cv_id', [0,1,2,3,4,None]),
-                'num_policy': hp.choice('num_policy', [2, 5])
+        # ctl_config['cv_id'] = args.cv_id
+        ctl_config.update({
+                'aff_step': args.a_step,
+                'div_step': args.d_step,
+                })
+        space = {# search params
+                'mode': tune.choice(["ppo", "reinforce"]),
+                'aff_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3]),
+                'div_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
+                'reward_type': tune.choice([1,2,3]),
+                'cv_id': tune.choice([0,1,2,3,4,None]),
+                'num_policy': tune.choice([1, 2, 5]),
                 }
-        current_best_params = []
+        # current_best_params = []
+        # best result of cifar100-wideresnet-28-10
+        current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 0, 'num_policy': 1}, # ['ppo', 10.0, 1000.0, 1, 0, 2]
+                               {'mode': 1, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 2, 'num_policy': 1}] # ['reinforce', 10.0, 1000.0, 3, 0, 2]
+    ctl_config.update(space)
     num_process_per_gpu = 1
     name = args.search_name
     reward_attr = 'test_top1'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
-    algo = HyperOptSearch(space, metric=reward_attr, mode="max", points_to_evaluate=current_best_params)
+    algo = HyperOptSearch(points_to_evaluate=current_best_params)
     algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
@@ -224,7 +230,9 @@ if __name__ == '__main__':
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
-    analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+    analysis = run(experiment_spec, search_alg=algo, scheduler=scheduler, verbose=2, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+                   progress_reporter=CLIReporter(parameter_columns=list(space.keys())),
+                   metric=reward_attr, mode="max", config=ctl_config)
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
