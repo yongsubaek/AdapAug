@@ -555,8 +555,6 @@ def train_controller3(controller, config):
                 # normalization
                 d_rewards = (d_rewards - d_rewards.mean(0)) / (d_rewards.std(0) + 1e-6)
                 a_rewards = (a_rewards - a_rewards.mean(0)) / (a_rewards.std(0) + 1e-6)
-                a_baseline = ZeroBase(ctl_ema_weight)
-                d_baseline = ZeroBase(ctl_ema_weight)
             else:
                 a_baseline = ExponentialMovingAverage(ctl_ema_weight)
                 d_baseline = ExponentialMovingAverage(ctl_ema_weight)
@@ -572,8 +570,11 @@ def train_controller3(controller, config):
             policy = d_dict['policy'][step].cuda()
             top1 = d_dict['acc'][step]
             log_probs, d_entropys, _ = controller(inputs, policy)
-            d_baseline.update(reward.mean())
-            advantages = reward - d_baseline.value()
+            if reward_type > 0:
+                d_baseline.update(reward.mean())
+                advantages = reward - d_baseline.value()
+            else:
+                advantages = reward
             if mode == "reinforce":
                 pol_loss = -1 * (log_probs * advantages)
             elif mode == 'ppo':
@@ -605,8 +606,11 @@ def train_controller3(controller, config):
             policy = a_dict['policy'][step].cuda()
             top1 = a_dict['acc'][step]
             log_probs, entropys, _ = controller(inputs, policy)
-            a_baseline.update(reward.mean())
-            advantages = reward - a_baseline.value()
+            if reward_type > 0:
+                a_baseline.update(reward.mean())
+                advantages = reward - a_baseline.value()
+            else:
+                advantages = reward
             if mode == "reinforce":
                 pol_loss = -1 * (log_probs * advantages)
             elif mode == 'ppo':
