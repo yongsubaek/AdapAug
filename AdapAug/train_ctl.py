@@ -460,7 +460,7 @@ def train_controller3(controller, config):
     div_w = config['div_w']
     aff_step = config['aff_step']
     div_step = config['div_step']
-    reward_type = config["reward_type"]
+    reward_type = config["reward_type"] # 0. ema, 1: none, 2: diversity=info_gain + batch norm, 3. batch norm
     controller.train()
     c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
     # controller = DataParallel(controller).cuda()
@@ -555,6 +555,11 @@ def train_controller3(controller, config):
                 # normalization
                 d_rewards = (d_rewards - d_rewards.mean(0)) / (d_rewards.std(0) + 1e-6)
                 a_rewards = (a_rewards - a_rewards.mean(0)) / (a_rewards.std(0) + 1e-6)
+                a_baseline = ZeroBase(ctl_ema_weight)
+                d_baseline = ZeroBase(ctl_ema_weight)
+            else:
+                a_baseline = ExponentialMovingAverage(ctl_ema_weight)
+                d_baseline = ExponentialMovingAverage(ctl_ema_weight)
         # d_loss = 0.
         # Get diversity loss
         controller.train()
@@ -567,13 +572,15 @@ def train_controller3(controller, config):
             policy = d_dict['policy'][step].cuda()
             top1 = d_dict['acc'][step]
             log_probs, d_entropys, _ = controller(inputs, policy)
+            d_baseline.update(reward.mean())
+            advantages = reward - d_baseline.value()
             if mode == "reinforce":
-                pol_loss = -1 * (log_probs * reward)
+                pol_loss = -1 * (log_probs * advantages)
             elif mode == 'ppo':
                 old_log_probs = d_dict['log_probs'][step].cuda()
                 ratios = (log_probs - old_log_probs).exp()
-                surr1 = ratios * reward
-                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * reward
+                surr1 = ratios * advantages
+                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2)
             # d_loss += (div_w * pol_loss - ctl_entropy_w * d_entropys).sum()
             d_loss = (div_w * pol_loss - ctl_entropy_w * d_entropys).mean()
@@ -598,13 +605,15 @@ def train_controller3(controller, config):
             policy = a_dict['policy'][step].cuda()
             top1 = a_dict['acc'][step]
             log_probs, entropys, _ = controller(inputs, policy)
+            a_baseline.update(reward.mean())
+            advantages = reward - a_baseline.value()
             if mode == "reinforce":
-                pol_loss = -1 * (log_probs * reward)
+                pol_loss = -1 * (log_probs * advantages)
             elif mode == 'ppo':
                 old_log_probs = a_dict['log_probs'][step].cuda()
                 ratios = (log_probs - old_log_probs).exp()
-                surr1 = ratios * reward
-                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * reward
+                surr1 = ratios * advantages
+                surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2)
             # a_loss += (aff_w * pol_loss - ctl_entropy_w * entropys).sum()
             a_loss = (aff_w * pol_loss - ctl_entropy_w * entropys).mean()
