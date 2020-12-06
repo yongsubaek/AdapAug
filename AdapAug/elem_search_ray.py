@@ -204,15 +204,16 @@ if __name__ == '__main__':
                 })
         space = {# search params
                 'mode': tune.choice(["ppo", "reinforce"]),
-                'aff_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
-                'div_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4, 1e+5]),
+                'aff_w': tune.choice([1e-1, 1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
+                'div_w': tune.choice([1e+1, 1e+2, 1e+3, 1e+4, 1e+5]),
                 'reward_type': tune.choice([1,2,3]),
                 'cv_id': tune.choice([0,1,2,3,4,None]),
                 'num_policy': tune.choice([1, 2, 5]),
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
-        current_best_params = [{'mode': 1, 'aff_w': 1, 'div_w': 4, 'cv_id': 1, 'reward_type': 2, 'num_policy': 2}, # ['reinforce', 10.0, 10000.0, 3, 1, 5]
+        current_best_params = [{'mode': 1, 'aff_w': 3, 'div_w': 2, 'reward_type': 2, 'cv_id': 2, 'num_policy': 2}, # 0.9740 ['reinforce', 100.0, 1000.0, 3, 2, 5]
+                               {'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 2, 'num_policy': 2}, # 0.9734 ['ppo', 1.0, 10000.0, 1, 2, 5]
                                 ]
         # best result of cifar100-wideresnet-28-10
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 0, 'num_policy': 1}, # ['ppo', 10.0, 1000.0, 1, 0, 2]
@@ -235,12 +236,12 @@ if __name__ == '__main__':
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
     analysis = run(experiment_spec, search_alg=algo, scheduler=scheduler, verbose=2, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                   progress_reporter=CLIReporter(parameter_columns=list(space.keys())),
+                   progress_reporter=CLIReporter(metric_columns=[reward_attr], parameter_columns=list(space.keys())),
                    metric=reward_attr, mode="max", config=ctl_config)
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
     for result in results:
-        logger.info('train_acc=%.4f affinity=%.4f diversity=%.4f test_loss=%.4f test_acc=%.4f %s' % (result.last_result['train_acc'], result.last_result['affinity'], result.last_result['diversity'], result.last_result['test_loss'], result.last_result['test_acc'], [result.config[k] for k in space]))
+        logger.info(f'affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f} {dict( (k, result.config[k]) for k in space )}')
     logger.info(w)

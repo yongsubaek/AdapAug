@@ -101,6 +101,7 @@ def train_controller(controller, config):
     test_metrics = []
     total_t_train_time = 0.
     baseline = ZeroBase(ctl_ema_weight)
+    # baseline = ExponentialMovingAverage(ctl_ema_weight)
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
