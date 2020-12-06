@@ -243,5 +243,6 @@ if __name__ == '__main__':
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
     for result in results:
-        logger.info(f'affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f} {dict( (k, result.config[k]) for k in space )}')
+        logger.info(f"affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f}\
+                    \n{ dict( (k, result.config[k]) for k in space ) }")
     logger.info(w)
