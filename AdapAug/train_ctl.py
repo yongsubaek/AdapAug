@@ -672,94 +672,12 @@ class ExponentialMovingAverage(object):
     """Return the current value of the moving average"""
     return self._numerator / self._denominator
 
-class MovingAverage(object):
-  """Class that maintains an exponential moving average."""
+class ZeroBase(object):
+  """Dummy class for non-baseline."""
 
   def __init__(self, dummy=None):
-    self._numerator   = 0
-    self._denominator = 0
-
-  def update(self, value):
-    self._numerator += value
-    self._denominator += 1
-
+      pass
+  def update(self, dummy=None):
+      pass
   def value(self):
-    """Return the current value of the moving average"""
-    return self._numerator / self._denominator
-
-
-class UnNormalize(object):
-    def __init__(self, mean=_CIFAR_MEAN, std=_CIFAR_STD):
-        self.mean = mean
-        self.std = std
-
-    def __call__(self, tensor):
-        """
-        Args:
-            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
-        Returns:
-            Tensor: Normalized image.
-        """
-        for t, m, s in zip(tensor, self.mean, self.std):
-            t.mul_(s).add_(m)
-            # The normalize code -> t.sub_(m).div_(s)
-        return tensor
-
-def save_pic(inputs, aug_inputs, labels, policies, batch_policies, step, verbose=False):
-    if verbose:
-        for i, ori_img in enumerate(inputs):
-            aug_img = aug_inputs[i]
-            label = labels[i]
-            applied_policy = policies[i]
-            policy = batch_policies[i]
-            print("step: %d" % i)
-            print(policy)
-            print(applied_policy)
-    save_path = "./results/{}/".format(C.get()['exp_name'])
-    os.makedirs(save_path, exist_ok=True)
-    # np.savez(save_path + "{}_policy.npz".format(step), labels=labels, policies=policies, batch_policies=batch_policies)
-    save_image(inputs, save_path + "{}_ori.png".format(step))
-    save_image(aug_inputs, save_path + "{}_aug.png".format(step))
-
-def augment_data(imgs, policys, transform):
-    """
-    arguments
-        imgs: (tensor) [batch, h, w, c]; [(image)->ToTensor->Normalize]
-        policys: (list:list:list:tuple) [batch, num_policy, n_op, 3]
-        transform: transfroms after augment
-    return
-        aug_imgs: (tensor) [batch, h, w, c];
-        [(image)->(policys)->RandomResizedCrop->RandomHorizontalFlip->ToTensor->Normalize->CutOut]
-    """
-    if "cifar" in C.get()['dataset']:
-        mean, std = _CIFAR_MEAN, _CIFAR_STD
-    elif "svhn" in C.get()['dataset']:
-        mean, std = _SVHN_MEAN, _SVHN_STD
-    aug_imgs = []
-    applied_policy = []
-    for img, policy in zip(imgs, policys):
-        # policy: (list:list:tuple) [num_policy, n_op, 3]
-        pil_img = transforms.ToPILImage()(UnNormalize(mean, std)(img.cpu()))
-        aug_img = Augmentation(policy)(pil_img)
-        aug_img = transform(aug_img)
-        aug_imgs.append(aug_img)
-        # applied_policy.append(augment.policy)
-    aug_imgs = torch.stack(aug_imgs)
-    return aug_imgs, applied_policy
-
-def batch_policy_decoder(augment): # augment: [batch, num_policy, n_op, 3]
-    op_list = augment_list(False)
-    batch_policies = []
-    for policy in augment:      # policy: [num_policy, n_op, 3]
-        policies = []
-        for subpolicies in policy: # subpolicies: [n_op, 3]
-            ops = []
-            for op in subpolicies:
-                op_idx, op_prob, op_level = op
-                op_prob = op_prob / 10.
-                op_level = op_level / 10.0 + 0.1
-                # assert (0.0 <= op_prob <= 1.0) and (0.0 <= op_level <= 1.0), f"prob {op_prob}, level {op_level}"
-                ops.append((op_list[op_idx][0].__name__, op_prob, op_level))
-            policies.append(ops)
-        batch_policies.append(policies)
-    return batch_policies # (list:list:list:tuple) [batch, num_policy, n_op, 3]
+    return 0.
