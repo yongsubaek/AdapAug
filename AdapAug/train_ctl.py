@@ -570,7 +570,7 @@ def train_controller3(controller, config):
             policy = d_dict['policy'][step].cuda()
             top1 = d_dict['acc'][step]
             log_probs, d_entropys, _ = controller(inputs, policy)
-            if reward_type > 0:
+            if reward_type == 0:
                 d_baseline.update(reward.mean())
                 advantages = reward - d_baseline.value()
             else:
