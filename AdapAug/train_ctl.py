@@ -97,9 +97,10 @@ def train_controller(controller, config):
     else:
         logger.info('------Train Controller from scratch------')
     ### Training Loop
+    train_metrics = {"affinity":[], "diversity": []}
     test_metrics = []
     total_t_train_time = 0.
-    baseline = ExponentialMovingAverage(ctl_ema_weight)
+    baseline = ZeroBase(ctl_ema_weight)
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
@@ -119,6 +120,7 @@ def train_controller(controller, config):
         # training and return M normalized moving averages of losses
         metrics = run_epoch(t_net, total_loader, criterion if batch_multiplier>1 else _criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                             batch_multiplier=batch_multiplier)
+        train_metrics['diversity'].append(metrics.get_dict())
         total_t_train_time += time.time() - ts
         logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
         ## Diversity Training from TargetNetwork trace
@@ -163,16 +165,18 @@ def train_controller(controller, config):
                         'model':t_net.state_dict(),
                         'optimizer_state_dict': t_optimizer.state_dict(),
                         'policy': sampled_policies,
-                        'test_metrics': test_metrics
+                        'test_metrics': test_metrics,
                         }, target_path)
             torch.save({
                         'epoch': epoch,
                         'ctl_state_dict': controller.state_dict(),
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'div_trace': dict(trace['diversity'].trace),
+                        'train_metrics': train_metrics,
                         }, ctl_save_path)
     # C.get()["aug"] = ori_aug
-    return trace, test_metrics
+    train_metrics['affinity'] = [{'top1': 0.}]
+    return trace, train_metrics, test_metrics
 
 def train_controller2(controller, config):
     """
@@ -274,6 +278,7 @@ def train_controller2(controller, config):
     aff_train_len = aff_loader_len if aff_step is None else min(aff_loader_len, int(aff_step))
     div_train_len = div_loader_len if div_step is None else min(div_loader_len, int(div_step))
 
+    train_metrics = {"affinity":[], "diversity": []}
     test_metrics = []
     total_t_train_time = 0.
     for epoch in range(C.get()['epoch']):
@@ -282,8 +287,9 @@ def train_controller2(controller, config):
         repeat = 1#len(total_loader.dataset)//len(valid_loader.dataset) if aff_step is None else 1
         for _ in range(repeat):
             _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, controller=controller, _transform=childaug)
-            a_tracker, _ = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
+            a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
                                      trace=True)
+            train_metrics["affinity"].append(a_metrics.get_dict())
             controller.train()
             a_dict = a_tracker.get_dict()
             for step, (inputs, labels) in enumerate(a_dict['clean_data']):
@@ -334,10 +340,11 @@ def train_controller2(controller, config):
         ts = time.time()
         _, total_loader, _, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
         t_net.train()
-        t_tracker, metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
+        t_tracker, d_metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True)
         total_t_train_time += time.time() - ts
-        logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {metrics}")
+        logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {d_metrics}")
+        train_metrics["diversity"].append(d_metrics.get_dict())
         ## Diversity Training from TargetNetwork trace
         controller.train()
         t_dict = t_tracker.get_dict()
@@ -419,13 +426,13 @@ def train_controller2(controller, config):
                         'optimizer_state_dict': c_optimizer.state_dict(),
                         'aff_trace': dict(trace['affinity'].trace),
                         'div_trace': dict(trace['diversity'].trace),
-                        # 'test_trace': dict(trace['test'].trace)
+                        'train_metrics': train_metrics,
                         }, ctl_save_path)
         if epoch < C.get()['epoch']-1:
             for k in trace:
                 trace[k].reset_accum()
     # C.get()["aug"] = ori_aug
-    return trace, test_metrics
+    return trace, train_metrics, test_metrics
 
 def train_controller3(controller, config):
     """
@@ -525,13 +532,13 @@ def train_controller3(controller, config):
                                         trace=True, get_clean_loss=reward_type==2)
         total_t_train_time += time.time() - ts
         logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {d_metrics}")
-        train_metrics["diversity"].append(d_metrics)
+        train_metrics["diversity"].append(d_metrics.get_dict())
         d_dict = d_tracker.get_dict()
         ## Childnet BackTracking
         _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, controller=controller, _transform=childaug)
         a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
                                  trace=True, get_clean_loss=True)
-        train_metrics["affinity"].append(a_metrics)
+        train_metrics["affinity"].append(a_metrics.get_dict())
         a_dict = a_tracker.get_dict()
         # policies.append(d_dict['policy'])
         ## Get Affinity & Diversity Rewards from traces

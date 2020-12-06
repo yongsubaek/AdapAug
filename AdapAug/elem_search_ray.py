@@ -204,13 +204,16 @@ if __name__ == '__main__':
                 })
         space = {# search params
                 'mode': tune.choice(["ppo", "reinforce"]),
-                'aff_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3]),
-                'div_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
+                'aff_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
+                'div_w': tune.choice([1e-0, 1e+1, 1e+2, 1e+3, 1e+4, 1e+5]),
                 'reward_type': tune.choice([1,2,3]),
                 'cv_id': tune.choice([0,1,2,3,4,None]),
                 'num_policy': tune.choice([1, 2, 5]),
                 }
         current_best_params = []
+        # best result of cifar10-wideresnet-28-10
+        current_best_params = [{'mode': 1, 'aff_w': 1, 'div_w': 4, 'cv_id': 1, 'reward_type': 2, 'num_policy': 2}, # ['reinforce', 10.0, 10000.0, 3, 1, 5]
+                                ]
         # best result of cifar100-wideresnet-28-10
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 0, 'num_policy': 1}, # ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'cv_id': 0, 'reward_type': 2, 'num_policy': 1}] # ['reinforce', 10.0, 1000.0, 3, 0, 2]
