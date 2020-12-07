@@ -70,8 +70,8 @@ class AdapAugData(Dataset):
         img = Image.fromarray(img)
         if self.transform is not None:
             if self.policies is not None:
-                log_prob = self.log_probs[index]
-                policy = self.policies[index]
+                log_prob = self.log_probs[index] # [M]
+                policy = self.policies[index] # [M]
                 if self.batch_multiplier > 1:
                     aug_imgs = []
                     for pol in policy:
@@ -286,11 +286,19 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
             log_probs = []
             total_trainset.controller.eval()
             for data, _ in temp_loader:
-                log_prob, _, sampled_policies = total_trainset.controller(data.cuda())
-                policies.append(sampled_policies.detach())
-                log_probs.append(log_prob.detach())
-            total_trainset.log_probs = torch.cat(log_probs).cpu().numpy()
-            total_trainset.policies = torch.cat(policies).cpu().numpy()
+                mpolicy = []
+                mlog_prob = []
+                for m in range(batch_multiplier):
+                    log_prob, _, sampled_policies = total_trainset.controller(data.cuda())
+                    mpolicy.append(sampled_policies.detach().cpu().numpy())
+                    mlog_prob.append(log_prob.detach().cpu().numpy())
+                if batch_multiplier == 1:
+                    mpolicy = mpolicy[0]
+                    mlog_prob = mlog_prob[0]
+                policies.append(mpolicy)
+                log_probs.append(mlog_prob)
+            total_trainset.log_probs = np.array(log_probs)
+            total_trainset.policies = np.array(policies)
     if split > 0.0:
         if train_idx is None or valid_idx is None:
             # filter by split ratio
