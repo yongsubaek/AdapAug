@@ -305,6 +305,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
                     _val_idx, _test_idx = next(sss)
                 test_idx  = [valid_idx[idx] for idx in _test_idx]
                 valid_idx = [valid_idx[idx] for idx in _val_idx]
+                train_idx = train_idx + valid_idx
                 test_sampler = SubsetSampler(test_idx)
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetSampler(valid_idx) if not rand_val else SubsetRandomSampler(valid_idx)
