@@ -38,6 +38,59 @@ _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 _CIFAR_STD2 = (0.2470, 0.2435, 0.2616)
 _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
+class GroupAugloader(object):
+    """
+    Wraper loader to Group Version
+    """
+    def __init__(self, dataloader, gr_assign=None, gr_policies=None):
+        self.dataloader = dataloader
+        self.gr_assign = gr_assign
+        self.gr_policies = gr_policies
+
+    def __iter__(self):
+        self.loader_iter = iter(self.dataloader)
+        return self
+
+    def __next__(self):
+        inputs, labels = next(self.loader_iter)
+        if self.gr_assign:
+            gr_ids = self.gr_assign(inputs, labels)
+            inputs, applied_policy = gr_augment(inputs, gr_ids, self.gr_policies)
+            self.applied_policy = applied_policy
+        return (inputs, labels)
+
+    def __len__(self):
+        return len(self.dataloader)
+
+def gr_augment(imgs, gr_ids, gr_policies):
+    """
+    imgs: unnormalized np.array
+    """
+    aug_imgs = []
+    applied_policy = []
+    for img, gr_id in zip(imgs, gr_ids):
+        # policy: (list:list:tuple) [num_policy, n_op, 3]
+        augment = Augmentation(gr_policies[gr_id])
+        pil_img = transforms.ToPILImage()(img.cpu())
+        # pil_img = img
+        aug_img = augment(pil_img)
+        # apply original training/valid transforms
+        transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
+        ])
+        if C.get()['cutout'] > 0:
+            transform.transforms.append(CutoutDefault(C.get()['cutout']))
+        aug_img = transform(aug_img)
+        aug_imgs.append(aug_img)
+        applied_policy.append(augment.policy)
+    aug_imgs = torch.stack(aug_imgs)
+    assert type(aug_imgs) == torch.Tensor and aug_imgs.shape == imgs.shape, \
+           "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
+    return aug_imgs, applied_policy
+
 class GrAugMix(Dataset):
     def __init__(self, datasets, root, gr_assign=None, gr_policies=None, train=True, download=False, transform=None, target_transform=None, gr_ids=None):
         train_size = 50000
