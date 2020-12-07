@@ -21,7 +21,7 @@ from tqdm import tqdm
 from theconf import Config as C, ConfigArgumentParser
 
 from AdapAug.common import get_logger, EMA, add_filehandler, get_optimizer
-from AdapAug.data import get_dataloaders, get_post_dataloader, Augmentation
+from AdapAug.data import get_dataloaders, Augmentation
 from AdapAug.lr_scheduler import adjust_learning_rate_resnet
 from AdapAug.metrics import accuracy, Accumulator, CrossEntropyLabelSmooth, Tracker
 from AdapAug.networks import get_model, num_class
@@ -461,6 +461,7 @@ def train_controller3(controller, config):
     aff_step = config['aff_step']
     div_step = config['div_step']
     reward_type = config["reward_type"] # 0. ema, 1: none, 2: diversity=info_gain + batch norm, 3. batch norm
+
     controller.train()
     c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
     # controller = DataParallel(controller).cuda()
@@ -527,7 +528,8 @@ def train_controller3(controller, config):
     for epoch in range(C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
-        _, total_loader, _, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], 0.0, controller=controller, _transform="default")
+        _, total_loader, valid_loader, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'] if config['validation'] else 0., split_idx=cv_id, \
+                                                          rand_val=True, controller=controller, _transform="default", validation=config['validation'])
         t_net.train()
         d_tracker, d_metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True, get_clean_loss=reward_type==2)
@@ -536,7 +538,8 @@ def train_controller3(controller, config):
         train_metrics["diversity"].append(d_metrics.get_dict())
         d_dict = d_tracker.get_dict()
         ## Childnet BackTracking
-        _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, rand_val=True, controller=controller, _transform=childaug)
+        # _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, \
+        #                                         rand_val=True, controller=controller, _transform=childaug, validation=config['validation'])
         a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
                                  trace=True, get_clean_loss=True)
         train_metrics["affinity"].append(a_metrics.get_dict())

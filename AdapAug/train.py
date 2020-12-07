@@ -109,7 +109,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     steps = 0
     for data, label in loader:
         steps += 1
-        if trace:
+        if isinstance(data, list):
             data, clean_data, log_prob, policy = data
         if batch_multiplier > 1:
             _shape = data.shape

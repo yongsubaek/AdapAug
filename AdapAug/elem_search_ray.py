@@ -20,7 +20,6 @@ from pathlib import Path
 lib_dir = (Path("__file__").parent).resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from AdapAug.common import get_logger, add_filehandler
-from AdapAug.data import get_dataloaders, get_gr_dist, get_post_dataloader
 from AdapAug.metrics import Accumulator, accuracy
 from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
@@ -39,7 +38,6 @@ def _get_path(dataset, model, tag, basemodel=True):
     os.makedirs(base_path, exist_ok=True)
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
-# @ray.remote(num_gpus=1, max_calls=1)
 def train_ctl_wrapper(config, augment, reporter):
     C.get()
     C.get().conf = config
@@ -105,6 +103,7 @@ if __name__ == '__main__':
     parser.add_argument('--d_step', type=int)
     parser.add_argument('--cv_id', type=int)
     parser.add_argument('--num-search', type=int, default=4)
+    parser.add_argument('--validation', action='store_true')
     parser.add_argument('--search_name', type=str)
 
     args = parser.parse_args()
@@ -174,7 +173,7 @@ if __name__ == '__main__':
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
             'ctl_train_steps': args.c_step, 'c_lr': args.c_lr,
-            'num_policy': args.num_policy,
+            'num_policy': args.num_policy, 'validation': args.validation
             # 'cv_id': args.cv_id,
             # 'num_policy': args.num_policy,
             }
@@ -203,12 +202,12 @@ if __name__ == '__main__':
                 'div_step': args.d_step,
                 })
         space = {# search params
-                'mode': tune.choice(["ppo", "reinforce"]),
-                'aff_w': tune.choice([1e-1, 1e-0, 1e+1, 1e+2, 1e+3, 1e+4]),
-                'div_w': tune.choice([1e+1, 1e+2, 1e+3, 1e+4, 1e+5]),
-                'reward_type': tune.choice([1,2,3]),
-                'cv_id': tune.choice([0,1,2,3,4,None]),
-                'num_policy': tune.choice([1, 2, 5]),
+                'mode': "ppo",
+                'aff_w': tune.choice([1e-3,1e-2,1e-1,0.5,0.9,0.99,0.999]),
+                'div_w': tune.sample_from(lambda spec: 1.-spec.config.aff_w),
+                'reward_type': 3,
+                'cv_id': tune.grid_search([0,1,2,3]),
+                'num_policy': 2,
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
@@ -219,30 +218,34 @@ if __name__ == '__main__':
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 0, 'num_policy': 1}, # 0.8423 ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'reward_type': 2, 'cv_id': 0, 'num_policy': 1}] # 0.8422 ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
-    num_process_per_gpu = 1
+    num_process_per_gpu = 2
     name = args.search_name
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
-    algo = HyperOptSearch(points_to_evaluate=current_best_params)
-    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+    # algo = HyperOptSearch(points_to_evaluate=current_best_params)
+    # algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
         run=name,
         num_samples=args.num_search,
         stop={'training_iteration': args.num_policy},
-        resources_per_trial={'cpu': 4, 'gpu': 1./num_process_per_gpu},
+        resources_per_trial={'cpu': 2, 'gpu': 1./num_process_per_gpu},
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
-    analysis = run(experiment_spec, search_alg=algo, scheduler=scheduler, verbose=2, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+    analysis = run(experiment_spec, search_alg=None, scheduler=scheduler, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
                    progress_reporter=CLIReporter(metric_columns=[reward_attr], parameter_columns=list(space.keys())),
                    metric=reward_attr, mode="max", config=ctl_config)
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+    report = defaultdict(list)
     for result in results:
         logger.info(f"affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f}\
                     \n{ dict( (k, result.config[k]) for k in space ) }")
+        report[result.config['aff_w']].append(result.last_result[reward_attr])
+    for k in report:
+        logger.info(f"{k}: {np.mean(report[k]):.4f}")
     logger.info(w)
