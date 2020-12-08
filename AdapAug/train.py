@@ -36,59 +36,6 @@ logger.setLevel(logging.INFO)
 
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 
-class GroupAugloader(object):
-    """
-    Wraper loader to Group Version
-    """
-    def __init__(self, dataloader, gr_assign=None, gr_policies=None):
-        self.dataloader = dataloader
-        self.gr_assign = gr_assign
-        self.gr_policies = gr_policies
-
-    def __iter__(self):
-        self.loader_iter = iter(self.dataloader)
-        return self
-
-    def __next__(self):
-        inputs, labels = next(self.loader_iter)
-        if self.gr_assign:
-            gr_ids = self.gr_assign(inputs, labels)
-            inputs, applied_policy = gr_augment(inputs, gr_ids, self.gr_policies)
-            self.applied_policy = applied_policy
-        return (inputs, labels)
-
-    def __len__(self):
-        return len(self.dataloader)
-
-def gr_augment(imgs, gr_ids, gr_policies):
-    """
-    imgs: unnormalized np.array
-    """
-    aug_imgs = []
-    applied_policy = []
-    for img, gr_id in zip(imgs, gr_ids):
-        # policy: (list:list:tuple) [num_policy, n_op, 3]
-        augment = Augmentation(gr_policies[gr_id])
-        pil_img = transforms.ToPILImage()(img.cpu())
-        # pil_img = img
-        aug_img = augment(pil_img)
-        # apply original training/valid transforms
-        transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(_CIFAR_MEAN, _CIFAR_STD),
-        ])
-        if C.get()['cutout'] > 0:
-            transform.transforms.append(CutoutDefault(C.get()['cutout']))
-        aug_img = transform(aug_img)
-        aug_imgs.append(aug_img)
-        applied_policy.append(augment.policy)
-    aug_imgs = torch.stack(aug_imgs)
-    assert type(aug_imgs) == torch.Tensor and aug_imgs.shape == imgs.shape, \
-           "Augmented Image Type Error, type: {}, shape: {}".format(type(aug_imgs), aug_imgs.shape)
-    return aug_imgs, applied_policy
-
 def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1, get_clean_loss=False):
     if data_parallel:
         model = DistributedDataParallel(model).cuda()
@@ -111,10 +58,13 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         steps += 1
         if isinstance(data, list):
             data, clean_data, log_prob, policy = data
+            if batch_multiplier > 1:
+                log_prob = torch.cat([ log_prob[:,m] for m in range(batch_multiplier) ]) # [batch, M] -> [batch*M]
+                policy = torch.cat([ policy[:,m] for m in range(batch_multiplier) ]) # [batch, M, n_subpolicy, n_op, 3] -> [batch*M, n_subpolicy, n_op, 3]
+        clean_label = label.detach()
         if batch_multiplier > 1:
-            _shape = data.shape
             data = torch.cat([ data[:,m] for m in range(batch_multiplier) ])
-            label = label.repeat(_shape[1])
+            label = label.repeat(batch_multiplier)
         data, label = data.cuda(), label.cuda()
 
         if C.get().conf.get('mixup', 0.0) <= 0.0 or optimizer is None:
@@ -128,9 +78,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
         if get_clean_loss:
             with torch.no_grad():
-                clean_data = clean_data.cuda()
-                preds = model(clean_data)
-                clean_loss = loss_fn(preds, label).detach()
+                clean_loss = loss_fn(model(clean_data.cuda()), clean_label.cuda()).detach()
 
         if trace or batch_multiplier > 1:
             _loss = loss.detach()
@@ -155,16 +103,10 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         })
         cnt += len(data)
 
-        if batch_multiplier > 1:
-            _losses = _loss.split(_shape[0])
-            # moving averages of losses
-            ma_metrics.add('cnt', _shape[0])
-            for m in range(batch_multiplier):
-                ma_metrics.add(f'loss_{m}', float(_losses[m].detach().cpu().sum()))
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
-                'clean_data': (clean_data.detach(), label.detach()),
+                'clean_data': (clean_data.detach(), clean_label),
                 'log_probs': log_prob,
                 'policy': policy,
                 'loss': _loss,
@@ -198,12 +140,6 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             logger.info('[%s %03d/%03d] %s', desc_default, epoch, C.get()['epoch'], metrics / cnt)
 
     metrics /= cnt
-    # noramlized moving averages
-    if batch_multiplier > 1:
-        ma_metrics /= 'cnt'
-        norm_loss = torch.tensor([ ma_metrics[f'loss_{m}'] for m in range(batch_multiplier) ])
-        norm_loss = (norm_loss - norm_loss.mean()) / (norm_loss.std()+1e-6)
-        metrics.norm_loss = norm_loss
     if optimizer:
         metrics.metrics['lr'] = optimizer.param_groups[0]['lr']
     if verbose:

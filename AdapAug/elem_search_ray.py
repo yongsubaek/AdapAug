@@ -46,7 +46,9 @@ def train_ctl_wrapper(config, augment, reporter):
         C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
     elif augment['version'] == 3:
         train_ctl = train_controller3
-        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
+        # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
+        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']}_{augment['cv_id']}"
+
     else:
         train_ctl = train_controller
 
@@ -204,10 +206,11 @@ if __name__ == '__main__':
         space = {# search params
                 'mode': "ppo",
                 'aff_w': tune.choice([1e-3,1e-2,1e-1,0.5,0.9,0.99,0.999]),
-                'div_w': tune.sample_from(lambda spec: 1.-spec.config.aff_w),
+                'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
                 'reward_type': 3,
-                'cv_id': tune.grid_search([0,1,2,3]),
+                'cv_id': 0,
                 'num_policy': 2,
+                'c_lr': tune.qloguniform(1e-4,0.1,5e-5),
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10

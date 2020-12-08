@@ -254,24 +254,7 @@ if __name__ == '__main__':
     metrics = test_metrics[-1]
     # test t_net
     logger.info('getting results...')
-    for k in trace:
-        logger.info(f'train_acc={div_metrics["top1"]:.4f}' \
-                  + f' affinity={aff_metrics["top1"]:.4f} diversity={div_metrics["loss"]:.4f}' \
-                  + f' test_loss={metrics["loss"]:.4f} test_acc={metrics["top1"]:.4f}')
-
-    # Affinity Calculation
-    # augment = {
-    #     'dataroot': args.dataroot, 'load_paths': paths,
-    #     'cv_ratio_test': args.cv_ratio, "cv_num": args.cv_num,
-    # }
-    # bench_affs = get_affinity(bench_policy_set, aff_bases, copy.deepcopy(copied_c), augment)
-    # aug_affs = get_affinity(final_policy_group, aff_bases, copy.deepcopy(copied_c), augment)
-    # # Diversity calculation
-    # bench_divs = []
-    # aug_divs = []
-    # logger.info('processed in %.4f secs' % w.pause('train_aug'))
-    # logger.info("bench_aff_avg={:.2f}".format(np.mean(bench_affs)))
-    # logger.info("aug_aff_avg={:.2f}".format(np.mean(aug_affs)))
-    # logger.info("bench_div_avg={:.2f}".format(np.mean(bench_divs)))
-    # logger.info("aug_div_avg={:.2f}".format(np.mean(aug_divs)))
+    logger.info(f'train_acc={div_metrics["top1"]:.4f}' \
+              + f' affinity={aff_metrics["top1"]:.4f} diversity={div_metrics["loss"]:.4f}' \
+              + f' test_loss={metrics["loss"]:.4f} test_acc={metrics["top1"]:.4f}')
     logger.info(w)
