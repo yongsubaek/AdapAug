@@ -47,7 +47,7 @@ def train_ctl_wrapper(config, augment, reporter):
     elif augment['version'] == 3:
         train_ctl = train_controller3
         # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
-        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']}_{augment['cv_id']}"
+        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']:.4f}_{augment['cv_id']}"
 
     else:
         train_ctl = train_controller
@@ -104,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--a_step', type=int)
     parser.add_argument('--d_step', type=int)
     parser.add_argument('--cv_id', type=int)
+    parser.add_argument('--M', type=int, default=1)
     parser.add_argument('--num-search', type=int, default=4)
     parser.add_argument('--validation', action='store_true')
     parser.add_argument('--search_name', type=str)
@@ -174,7 +175,7 @@ if __name__ == '__main__':
             'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
-            'ctl_train_steps': args.c_step, 'c_lr': args.c_lr,
+            'ctl_train_steps': args.c_step, 'c_lr': args.c_lr, 'M': args.M,
             'num_policy': args.num_policy, 'validation': args.validation
             # 'cv_id': args.cv_id,
             # 'num_policy': args.num_policy,
@@ -221,7 +222,7 @@ if __name__ == '__main__':
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 0, 'num_policy': 1}, # 0.8423 ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'reward_type': 2, 'cv_id': 0, 'num_policy': 1}] # 0.8422 ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
-    num_process_per_gpu = 2
+    num_process_per_gpu = 1
     name = args.search_name
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
