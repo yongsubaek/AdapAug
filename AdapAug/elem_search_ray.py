@@ -46,9 +46,10 @@ def train_ctl_wrapper(config, augment, reporter):
         C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
     elif augment['version'] == 3:
         train_ctl = train_controller3
+        if 'div_w' not in augment:
+            augment['div_w'] = 1-augment['aff_w']
         # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
         C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']:.4f}_{augment['cv_id']}"
-
     else:
         train_ctl = train_controller
 
@@ -207,7 +208,7 @@ if __name__ == '__main__':
         space = {# search params
                 'mode': "ppo",
                 'aff_w': tune.choice([1e-3,1e-2,1e-1,0.5,0.9,0.99,0.999]),
-                'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
+                # 'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
                 'reward_type': 3,
                 'cv_id': 0,
                 'num_policy': 2,
@@ -222,13 +223,13 @@ if __name__ == '__main__':
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 0, 'num_policy': 1}, # 0.8423 ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'reward_type': 2, 'cv_id': 0, 'num_policy': 1}] # 0.8422 ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
-    num_process_per_gpu = 1
+    num_process_per_gpu = 2
     name = args.search_name
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
-    # algo = HyperOptSearch(points_to_evaluate=current_best_params)
-    # algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+    algo = HyperOptSearch(points_to_evaluate=current_best_params)
+    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
         run=name,
@@ -238,18 +239,18 @@ if __name__ == '__main__':
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
-    analysis = run(experiment_spec, search_alg=None, scheduler=scheduler, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+    analysis = run(experiment_spec, search_alg=algo, scheduler=scheduler, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
                    progress_reporter=CLIReporter(metric_columns=[reward_attr], parameter_columns=list(space.keys())),
                    metric=reward_attr, mode="max", config=ctl_config)
     logger.info('getting results...')
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-    report = defaultdict(list)
+    # report = defaultdict(list)
     for result in results:
         logger.info(f"affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f}\
                     \n{ dict( (k, result.config[k]) for k in space ) }")
-        report[result.config['aff_w']].append(result.last_result[reward_attr])
-    for k in report:
-        logger.info(f"{k}: {np.mean(report[k]):.4f}")
+    #     report[result.config['aff_w']].append(result.last_result[reward_attr])
+    # for k in report:
+    #     logger.info(f"{k}: {np.mean(report[k]):.4f}")
     logger.info(w)
