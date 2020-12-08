@@ -313,7 +313,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
             for _ in range(split_idx + 1):
                 train_idx, valid_idx = next(sss)
             if validation:
-                sss = StratifiedShuffleSplit(n_splits=5, test_size=0.5, random_state=0)
+                sss = StratifiedShuffleSplit(n_splits=5, test_size=0.25, random_state=0)
                 sss = sss.split(list(range(len(valid_idx))), [total_trainset.targets[idx] for idx in valid_idx])
                 for _ in range(split_idx + 1):
                     _val_idx, _test_idx = next(sss)

@@ -28,7 +28,6 @@ from AdapAug.controller import Controller
 from AdapAug.train_ctl import train_controller, train_controller2, train_controller3
 import csv, random
 import warnings
-warnings.filterwarnings("ignore")
 
 logger = get_logger('Adap AutoAugment')
 
@@ -39,6 +38,7 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 def train_ctl_wrapper(config, augment, reporter):
+    warnings.filterwarnings("ignore")
     C.get()
     C.get().conf = config
     if augment['version'] == 2:
