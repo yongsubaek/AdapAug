@@ -208,11 +208,11 @@ if __name__ == '__main__':
         space = {# search params
                 'mode': "ppo",
                 'aff_w': tune.choice([1e-3,1e-2,1e-1,0.5,0.9,0.99,0.999]),
-                # 'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
+                'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
                 'reward_type': 3,
                 'cv_id': 0,
                 'num_policy': 2,
-                'c_lr': tune.qloguniform(1e-4,0.1,5e-5),
+                'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
@@ -228,8 +228,8 @@ if __name__ == '__main__':
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
-    algo = HyperOptSearch(points_to_evaluate=current_best_params)
-    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+    # algo = HyperOptSearch(points_to_evaluate=current_best_params)
+    # algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
         run=name,
@@ -239,7 +239,7 @@ if __name__ == '__main__':
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
-    analysis = run(experiment_spec, search_alg=algo, scheduler=scheduler, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
+    analysis = run(experiment_spec, search_alg=None, scheduler=scheduler, verbose=1, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
                    progress_reporter=CLIReporter(metric_columns=[reward_attr], parameter_columns=list(space.keys())),
                    metric=reward_attr, mode="max", config=ctl_config)
     logger.info('getting results...')
