@@ -624,7 +624,7 @@ def train_controller3(controller, config):
                 surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
                 pol_loss = -torch.min(surr1, surr2)
             # a_loss += (aff_w * pol_loss - ctl_entropy_w * entropys).sum()
-            a_loss = (aff_w * pol_loss - ctl_entropy_w * entropys).mean()
+            a_loss = (len(total_loader)/len(valid_loader))*(aff_w * pol_loss - ctl_entropy_w * entropys).mean()
             a_loss.backward(retain_graph=True)
             trace['affinity'].add_dict({
                 'cnt': batch_size,
