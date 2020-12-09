@@ -223,7 +223,7 @@ if __name__ == '__main__':
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 0, 'num_policy': 1}, # 0.8423 ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'reward_type': 2, 'cv_id': 0, 'num_policy': 1}] # 0.8422 ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
-    num_process_per_gpu = 1
+    num_process_per_gpu = 2
     name = args.search_name
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
