@@ -41,6 +41,7 @@ _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 class AdapAugData(Dataset):
     def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kargs):
         dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
+        self.dataname = dataname
         self.data = dataset.data if dataname != "SVHN" else np.transpose(dataset.data, (0,2,3,1))
         self.targets = self.labels = dataset.targets if dataname != "SVHN" else dataset.labels
         self.transform = transform
@@ -92,7 +93,7 @@ class AdapAugData(Dataset):
                             _img = self.transform(_img)
                             imgs.append(_img)
                         img = torch.stack(imgs) # [M, 3, 32, 32]
-                    else: #
+                    else:
                         img = self.transform(img)
                 else: # AdapAug temp_loader
                     img = self.clean_transform(img)
@@ -319,8 +320,12 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
                     _val_idx, _test_idx = next(sss)
                 test_idx  = [valid_idx[idx] for idx in _test_idx]
                 valid_idx = [valid_idx[idx] for idx in _val_idx] # D_A
-                test_sampler = SubsetSampler(test_idx)
-            if controller is not None:
+                # build testset
+                total_trainset.controller = None
+                testset = copy.deepcopy(total_trainset)
+                testset.transforms = transform_test
+                testset = Subset(testset, test_idx)
+            if controller is not None: # Adv AA
                 train_idx = list(train_idx) + list(valid_idx) # D_M + D_A
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetSampler(valid_idx) if not rand_val else SubsetRandomSampler(valid_idx)
@@ -330,12 +335,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
         valid_sampler = SubsetSampler([])
 
         if train_idx is not None and valid_idx is not None:
-            if dataset in ["svhn", "reduced_svhn"]:
-                targets = [total_trainset.labels[idx] for idx in train_idx]
-            else:
-                targets = [total_trainset.targets[idx] for idx in train_idx]
             total_trainset = Subset(total_trainset, train_idx)
-            total_trainset.targets = targets
 
     trainloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
@@ -343,14 +343,9 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
         sampler=valid_sampler, drop_last=rand_val)
-    if validation:
-        testloader = torch.utils.data.DataLoader(
-            total_trainset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
-            sampler=test_sampler, drop_last=False)
-    else:
-        testloader = torch.utils.data.DataLoader(
-            testset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
-            drop_last=False)
+    testloader = torch.utils.data.DataLoader(
+        testset, batch_size=batch, shuffle=False, num_workers=8 if torch.cuda.device_count()==8 else 4, pin_memory=True,
+        drop_last=False)
     return train_sampler, trainloader, validloader, testloader
 
 

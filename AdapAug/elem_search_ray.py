@@ -46,9 +46,10 @@ def train_ctl_wrapper(config, augment, reporter):
         C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_a{int(augment['aff_step'])}_d{int(augment['div_step'])}_cagg{int(augment['ctl_num_aggre'])}_id{augment['cv_id']}"
     elif augment['version'] == 3:
         train_ctl = train_controller3
+        if 'div_w' not in augment:
+            augment['div_w'] = 1-augment['aff_w']
         # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
         C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']:.4f}_{augment['cv_id']}"
-
     else:
         train_ctl = train_controller
 
@@ -206,12 +207,12 @@ if __name__ == '__main__':
                 })
         space = {# search params
                 'mode': "ppo",
-                'aff_w': tune.choice([1e-3,1e-2,1e-1,0.5,0.9,0.99,0.999]),
+                'aff_w': tune.sample_from(lambda spec: round((np.random.beta(0.5, 0.5)+0.001)/1.002,3)),
                 'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
                 'reward_type': 3,
                 'cv_id': 0,
                 'num_policy': 2,
-                'c_lr': tune.qloguniform(1e-4,0.1,5e-5),
+                'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
@@ -234,7 +235,7 @@ if __name__ == '__main__':
         run=name,
         num_samples=args.num_search,
         stop={'training_iteration': args.num_policy},
-        resources_per_trial={'cpu': 2, 'gpu': 1./num_process_per_gpu},
+        resources_per_trial={'cpu': 4, 'gpu': 1./num_process_per_gpu},
         config=ctl_config,
         local_dir=os.path.join(os.path.dirname(os.path.realpath(__file__)), "ray_results"),
         )
@@ -245,11 +246,11 @@ if __name__ == '__main__':
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-    report = defaultdict(list)
+    # report = defaultdict(list)
     for result in results:
         logger.info(f"affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f}\
                     \n{ dict( (k, result.config[k]) for k in space ) }")
-        report[result.config['aff_w']].append(result.last_result[reward_attr])
-    for k in report:
-        logger.info(f"{k}: {np.mean(report[k]):.4f}")
+    #     report[result.config['aff_w']].append(result.last_result[reward_attr])
+    # for k in report:
+    #     logger.info(f"{k}: {np.mean(report[k]):.4f}")
     logger.info(w)
