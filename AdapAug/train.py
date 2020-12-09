@@ -38,11 +38,10 @@ _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 
 def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1, get_clean_loss=False):
     if data_parallel:
-        model = DistributedDataParallel(model).cuda()
+        model = DataParallel(model).cuda()
     if verbose:
         loader = tqdm(loader, disable=tqdm_disabled)
         loader.set_description('[%s %04d/%04d]' % (desc_default, epoch, C.get()['epoch']))
-
     params_without_bn = [params for name, params in model.named_parameters() if not ('_bn' in name or '.bn' in name)]
 
     loss_ema = None
@@ -78,10 +77,10 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
         if get_clean_loss:
             with torch.no_grad():
-                clean_loss = loss_fn(model(clean_data.cuda()), clean_label.cuda()).detach()
+                clean_loss = loss_fn(model(clean_data.cuda()), clean_label.cuda()).cpu().detach()
 
         if trace or batch_multiplier > 1:
-            _loss = loss.detach()
+            _loss = loss.cpu().detach()
             loss = loss.mean()
         if optimizer:
             loss += wd * (1. / 2.) * sum([torch.sum(p ** 2) for p in params_without_bn])
@@ -106,14 +105,16 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         if trace:
             tracker.add_dict({
                 'cnt': len(data),
-                'clean_data': (clean_data.detach(), clean_label),
-                'log_probs': log_prob,
-                'policy': policy,
+                'clean_data': (clean_data.cpu().detach(), clean_label.cpu()),
+                'log_probs': log_prob.cpu().detach(),
+                'policy': policy.cpu().detach(),
                 'loss': _loss,
                 'acc': top1.item(),
             })
+            del log_prob, policy, _loss, clean_data, clean_label
             if get_clean_loss:
                 tracker.add('clean_loss', clean_loss)
+                del clean_loss
         if loss_ema:
             loss_ema = loss_ema * 0.9 + loss.item() * 0.1
         else:

@@ -323,7 +323,8 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controlle
                 # build testset
                 total_trainset.controller = None
                 testset = copy.deepcopy(total_trainset)
-                testset.transforms = transform_test
+                testset.transform = transform_test
+                testset.policies = None
                 testset = Subset(testset, test_idx)
             if controller is not None: # Adv AA
                 train_idx = list(train_idx) + list(valid_idx) # D_M + D_A

@@ -495,6 +495,8 @@ def train_controller3(controller, config):
         t_net = DataParallel(t_net).cuda()
         if controller.img_input:
             controller = DataParallel(controller).cuda()
+        if aff_w != 0.:
+            childnet = DataParallel(childnet).cuda()
     trace = {'affinity': Tracker(),
              'diversity': Tracker()}
              # 'test': Tracker()}
@@ -539,6 +541,7 @@ def train_controller3(controller, config):
         logger.info(f"[T-train] {epoch+1}/{C.get()['epoch']} (time {total_t_train_time:.1f}) {d_metrics}")
         train_metrics["diversity"].append(d_metrics.get_dict())
         d_dict = d_tracker.get_dict()
+        del d_tracker, d_metrics
         with torch.no_grad():
             d_rewards = torch.stack(d_dict['loss']).cuda() # [train_len_d, M*batch]
             _d_rewards = d_rewards.cpu().detach()
@@ -558,6 +561,7 @@ def train_controller3(controller, config):
                                             trace=True, get_clean_loss=True, batch_multiplier=batch_multiplier)
             train_metrics["affinity"].append(a_metrics.get_dict())
             a_dict = a_tracker.get_dict()
+            del a_tracker, a_metrics
             ## Get Affinity & Diversity Rewards from traces
             with torch.no_grad():
                 a_rewards = torch.stack(a_dict['loss']).cuda() # [train_len_a, M*batch]
@@ -576,7 +580,7 @@ def train_controller3(controller, config):
                 if div_step is not None and step >= div_step: break
                 st = time.time()
                 inputs, labels = d_dict['clean_data'][step]
-                batch_size = len(labels)
+                batch_size = len(labels)*batch_multiplier
                 inputs, labels = inputs.cuda(), labels.cuda()
                 policy = d_dict['policy'][step].cuda() # [batch*M, n_subpolicy, n_op, 3]
                 top1 = d_dict['acc'][step]
@@ -614,7 +618,7 @@ def train_controller3(controller, config):
                 if aff_step is not None and step >= aff_step: break
                 st = time.time()
                 inputs, labels = a_dict['clean_data'][step]
-                batch_size = len(labels)
+                batch_size = len(labels)*batch_multiplier
                 inputs, labels = inputs.cuda(), labels.cuda()
                 policy = a_dict['policy'][step].cuda()
                 top1 = a_dict['acc'][step]
