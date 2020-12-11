@@ -153,6 +153,7 @@ if __name__ == '__main__':
     parser.add_argument('--c_agg', type=int, default=1)
     parser.add_argument('--aw', type=float, default=0.)
     parser.add_argument('--dw', type=float, default=1.)
+    parser.add_argument('--ew', type=float, default=1e-5)
     parser.add_argument('--M', type=int, default=1)
     parser.add_argument('--no_img', action='store_true')
     parser.add_argument('--r_type', type=int, default=1)
@@ -235,8 +236,8 @@ if __name__ == '__main__':
             'childaug': args.childaug, 'mode': args.mode, 'c_lr': args.c_lr,
             'cv_num': cv_num, 'cv_id': args.cv_id,
             'ctl_train_steps': args.c_step, 'aff_step': args.a_step, 'div_step': args.d_step, # version 2
-            'aff_w': args.aw, 'div_w': args.dw, 'reward_type': args.r_type, # version 3
-            'ctl_num_aggre': args.c_agg, "M": args.M, 'validation': args.validation
+            'aff_w': args.aw, 'div_w': args.dw, 'ctl_entropy_w': args.ew, 'reward_type': args.r_type, # version 3
+            'ctl_num_aggre': args.c_agg, "M": args.M, 'validation': args.validation,
     }
     if args.version == 2:
         # epoch-wise alternating training
