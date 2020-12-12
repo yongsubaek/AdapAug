@@ -453,7 +453,7 @@ def train_controller3(controller, config):
     childaug = config['childaug']
 
     eps_clip = 0.2
-    ctl_entropy_w = 1e-5
+    ctl_entropy_w = config['ctl_entropy_w']
     ctl_ema_weight = 0.95
     cv_id = 0 if config['cv_id'] is None else config['cv_id']
     aff_w = config['aff_w']
