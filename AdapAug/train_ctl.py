@@ -96,25 +96,32 @@ def train_controller(controller, config):
                 t_net.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
             else:
                 t_net.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
-                del data
         t_optimizer.load_state_dict(data['optimizer_state_dict'])
+        start_epoch = data['epoch']
+        policies = data['policy']
+        test_metrics = data['test_metrics']
+        del data
+    else:
+        start_epoch = 0
+        policies = []
+        test_metrics = []
     # load ctl weights and results
     if load_search and os.path.isfile(ctl_save_path):
         logger.info('------Controller load------')
         checkpoint = torch.load(ctl_save_path)
-        controller.module.load_state_dict(checkpoint['ctl_state_dict'])
+        controller.load_state_dict(checkpoint['ctl_state_dict'])
         c_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         trace['diversity'].trace = checkpoint['div_trace']
+        train_metrics = checkpoint['train_metrics']
+        del checkpoint
     else:
         logger.info('------Train Controller from scratch------')
+        train_metrics = {"affinity":[], "diversity": []}
     ### Training Loop
-    train_metrics = {"affinity":[], "diversity": []}
-    test_metrics = []
-    total_t_train_time = 0.
     baseline = ZeroBase(ctl_ema_weight)
     # baseline = ExponentialMovingAverage(ctl_ema_weight)
-    policies = []
-    for epoch in range(C.get()['epoch']):
+    total_t_train_time = 0.
+    for epoch in range(start_epoch, C.get()['epoch']):
         ## TargetNetwork Training
         ts = time.time()
         log_probs=[]
@@ -553,11 +560,11 @@ def train_controller3(controller, config):
                 t_net.load_state_dict({k.replace('module.', ''): v for k, v in data[key].items()})
             else:
                 t_net.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
-                del data
         t_optimizer.load_state_dict(data['optimizer_state_dict'])
         start_epoch = data['epoch']
         policies = data['policy']
         test_metrics = data['test_metrics']
+        del data
     else:
         start_epoch = 0
         policies = []
@@ -566,11 +573,12 @@ def train_controller3(controller, config):
     if load_search and os.path.isfile(ctl_save_path):
         logger.info('------Controller load------')
         checkpoint = torch.load(ctl_save_path)
-        controller.module.load_state_dict(checkpoint['ctl_state_dict'])
+        controller.load_state_dict(checkpoint['ctl_state_dict'])
         c_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         trace['affinity'].trace = checkpoint['aff_trace']
         trace['diversity'].trace = checkpoint['div_trace']
         train_metrics = checkpoint['train_metrics']
+        del checkpoint
     else:
         logger.info('------Train Controller from scratch------')
         train_metrics = {"affinity":[], "diversity": []}
