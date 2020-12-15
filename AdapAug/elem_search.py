@@ -143,8 +143,10 @@ if __name__ == '__main__':
     parser.add_argument('--rand_search', action='store_true')
     parser.add_argument('--exp_name', type=str)
 
+    parser.add_argument('--lstm_n', type=int, default=1)
     parser.add_argument('--lstm_size', type=int, default=100)
     parser.add_argument('--emb_size', type=int, default=32)
+    parser.add_argument('--temp', type=float)
     parser.add_argument('--c_lr', type=float, default=0.00035)
     parser.add_argument('--cv_id', type=int)
     parser.add_argument('--c_step', type=int)
@@ -228,8 +230,8 @@ if __name__ == '__main__':
     ops = augment_list(False)
     target_path = base_path + "/target_network.pt"
     ctl_save_path = base_path + "/ctl_network.pt"
-    controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size,
-                            operation_prob=0, img_input=not args.no_img).cuda()
+    controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size, lstm_num_layers = args.lstm_n,
+                            operation_prob=0, img_input=not args.no_img, temperature=args.temp).cuda()
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,

@@ -18,8 +18,7 @@ class Controller(nn.Module):
                  tanh_constant=1.5,
                  temperature=None,
                  img_input=True,
-                 n_group=0,
-                 gr_prob_weight=1e-3):
+                 ):
         super(Controller, self).__init__()
 
         self.n_subpolicy = n_subpolicy
@@ -30,13 +29,10 @@ class Controller(nn.Module):
         self.baseline = baseline
         self.tanh_constant = tanh_constant
         self.temperature = temperature
-        self.n_group = n_group
-        self.gr_prob_weight = gr_prob_weight
 
         self._operation_types = operation_types
         self._operation_prob = operation_prob
         self._operation_mag = operation_mag
-        self._search_space_size = [self._operation_types, self._operation_prob, self._operation_mag]
 
         self.img_input = img_input
         self._create_params()
@@ -64,13 +60,6 @@ class Controller(nn.Module):
             )
         else:
             self.in_emb = nn.Embedding(1, self.emb_size)  # Learn the starting input
-
-        if self.n_group > 0:
-            self.logit2group = nn.Sequential(
-                nn.Linear(self.lstm_size, self.n_group),
-                nn.LogSoftmax()
-            )
-            self.gr_emb = nn.Embedding(self.n_group, self.lstm_size)
         # LSTM output to Categorical logits
         self.o_logit = nn.Linear(self.lstm_size, self._operation_types)#, bias=False)
         self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
@@ -90,6 +79,21 @@ class Controller(nn.Module):
                 nn.init.uniform_(m.weight, -0.1, 0.1)
         nn.init.uniform_(self.lstm.weight_hh_l0, -0.1, 0.1)
         nn.init.uniform_(self.lstm.weight_ih_l0, -0.1, 0.1)
+
+    def rnn_params(self):
+        # return nn.ParameterList([ param for param in self.parameters() if param not in self.conv_input.parameters()])
+        ctl_params = nn.ParameterList(
+                    list(self.lstm.parameters()) +
+                    list(self.o_logit.parameters()) +
+                    list(self.p_logit.parameters()) +
+                    list(self.m_logit.parameters()) +
+                    list(self.o_emb.parameters()) +
+                    list(self.p_emb.parameters()) +
+                    list(self.m_emb.parameters())
+                    )
+        if not self.img_input:
+            ctl_params.extend(self.in_emb.parameters())
+        return ctl_params
 
     def softmax_tanh(self, logit):
         if self.temperature is not None:
@@ -111,17 +115,8 @@ class Controller(nn.Module):
         self.hidden = None  # setting state to None will initialize LSTM state with 0s
         if self.img_input:
             inputs = self.conv_input(image)                 # [batch, lstm_size]
-            if self.n_group > 0:
-                gr_vectors = self.logit2group(inputs)
-                gr_log_prob, gr_ids = gr_vectors.max(1)
-                inputs = self.gr_emb(gr_ids)
-                log_probs.append(self.gr_prob_weight * gr_log_prob)
         else:
-            if self.n_group > 0:
-                gr_ids = torch.randint(low=0, high=self.n_group, size=(len(image),)).cuda()
-                inputs = self.gr_emb(gr_ids)
-            else:
-                inputs = self.in_emb.weight                     # [1, lstm_size]
+            inputs = self.in_emb.weight                     # [1, lstm_size]
 
         inputs = inputs.unsqueeze(0)                        # [1, batch(or 1), lstm_size]
         for i_subpol in range(self.n_subpolicy):

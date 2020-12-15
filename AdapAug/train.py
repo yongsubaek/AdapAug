@@ -36,7 +36,8 @@ logger.setLevel(logging.INFO)
 
 _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 
-def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, data_parallel=False, trace=False, batch_multiplier=1, get_clean_loss=False):
+def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None, is_master=True, ema=None, wd=0.0, tqdm_disabled=False, \
+                data_parallel=False, trace=False, batch_multiplier=1, get_trace=[]):
     if data_parallel:
         model = DataParallel(model).cuda()
     if verbose:
@@ -46,9 +47,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
     loss_ema = None
     metrics = Accumulator()
-    if batch_multiplier > 1:
-        ma_metrics = Accumulator() # moving averages of losses
-    if trace:
+    if trace or batch_multiplier > 1:
         tracker = Tracker()
     cnt = 0
     total_steps = len(loader)
@@ -75,10 +74,11 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
             loss = loss_fn(preds, targets, shuffled_targets, lam)
             del shuffled_targets, lam
 
-        if get_clean_loss:
+        if 'clean_loss' in get_trace or 'clean_logits' in get_trace:
             with torch.no_grad():
-                clean_loss = loss_fn(model(clean_data.cuda()), clean_label.cuda()).cpu().detach()
-
+                clean_logits = model(clean_data.cuda())
+                if 'clean_loss' in get_trace:
+                    clean_loss = loss_fn(clean_logits, clean_label.cuda()).cpu().detach()
         if trace or batch_multiplier > 1:
             _loss = loss.cpu().detach()
             loss = loss.mean()
@@ -112,9 +112,21 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
                 'acc': top1.item(),
             })
             del log_prob, policy, _loss, clean_data, clean_label
-            if get_clean_loss:
+            if 'clean_loss' in get_trace:
                 tracker.add('clean_loss', clean_loss)
                 del clean_loss
+            if 'logits' in get_trace:
+                tracker.add('logits', preds.cpu().detach())
+            if 'clean_logits' in get_trace:
+                tracker.add('clean_logits', clean_logits.cpu().detach())
+
+        elif batch_multiplier > 1:
+            tracker.add_dict({
+                'cnt': len(data),
+                'loss': _loss,
+                # 'acc': top1.item(),
+            })
+            del _loss
         if loss_ema:
             loss_ema = loss_ema * 0.9 + loss.item() * 0.1
         else:
@@ -146,7 +158,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
     if verbose:
         for key, value in metrics.items():
             writer.add_scalar(key, value, epoch)
-    if trace:
+    if trace or batch_multiplier > 1:
         return tracker, metrics
     return metrics
 

@@ -40,18 +40,29 @@ _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
 class AdapAugData(Dataset):
     def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kargs):
-        dataset = torchvision.datasets.__dict__[dataname](transform=transform, **kargs)
+        dataset = torchvision.datasets.__dict__[dataname](transform=None, **kargs)
         self.dataname = dataname
         self.data = dataset.data if dataname != "SVHN" else np.transpose(dataset.data, (0,2,3,1))
         self.targets = self.labels = dataset.targets if dataname != "SVHN" else dataset.labels
+
+        for i,x in enumerate(transform.transforms):
+            if type(x) == transforms.ToTensor:
+                split_i = i
+                break
+        else:
+            raise ValueError(f"transform has no ToTensor: {transform}")
         self.transform = transform
-        self.target_transform = target_transform
+        self.before_transform = transforms.Compose(transform.transforms[:split_i])
+        self.after_transform = transforms.Compose(transform.transforms[split_i:])
         self.clean_transform = clean_transform
+        self.target_transform = target_transform
+
         self.controller = controller
         self.given_policy = given_policy
         self.log_probs = None
-        self.batch_multiplier = batch_multiplier
         self.policies = None
+
+        self.batch_multiplier = batch_multiplier
 
     def __len__(self):
         return len(self.data)
@@ -70,33 +81,36 @@ class AdapAugData(Dataset):
         # to return a PIL Image
         img = Image.fromarray(img)
         if self.transform is not None:
-            if self.policies is not None:
+            if self.policies is not None: # CTL Training
                 log_prob = self.log_probs[index] # [M]
                 policy = self.policies[index] # [M]
                 if self.batch_multiplier > 1:
                     aug_imgs = []
                     for pol in policy:
-                        aug_img = Augmentation(pol)(img)
-                        aug_img = self.transform(aug_img)
+                        aug_img = self.before_transform(img)
+                        aug_img = Augmentation(pol)(aug_img)
+                        aug_img = self.after_transform(aug_img)
                         aug_imgs.append(aug_img)
                     aug_img =  torch.stack(aug_imgs) # [M, 3, 32, 32]
                 else:
-                    aug_img = Augmentation(policy)(img)
-                    aug_img = self.transform(aug_img)
-                img = self.clean_transform(img)
+                    aug_img = self.before_transform(img)
+                    aug_img = Augmentation(policy)(aug_img)
+                    aug_img = self.after_transform(aug_img)
+                img = self.transform(img)
             else:
                 if self.controller is None: # Adversarial AutoAugment
                     if self.batch_multiplier > 1:
                         imgs = []
                         for policy in self.given_policy:
-                            _img = Augmentation(policy)(img)
-                            _img = self.transform(_img)
-                            imgs.append(_img)
+                            aug_img = self.before_transform(img)
+                            aug_img = Augmentation(policy)(aug_img)
+                            aug_img = self.after_transform(aug_img)
+                            imgs.append(aug_img)
                         img = torch.stack(imgs) # [M, 3, 32, 32]
                     else:
                         img = self.transform(img)
                 else: # AdapAug temp_loader
-                    img = self.clean_transform(img)
+                    img = self.transform(img)
 
         if self.target_transform is not None:
             target = self.target_transform(target)
