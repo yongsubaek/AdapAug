@@ -23,7 +23,7 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from AdapAug.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from AdapAug.augmentations import augment_list
 from AdapAug.common import get_logger, add_filehandler
-from AdapAug.data import get_dataloaders
+from AdapAug.data_archive import get_dataloaders
 from AdapAug.metrics import Accumulator, accuracy
 from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
@@ -385,8 +385,7 @@ if __name__ == '__main__':
                     },
                     local_dir=os.path.join(base_path, "ray_results"),
                     )
-                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                                global_checkpoint_period=np.inf)
+                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
                 results = analysis.trials
                 print()
                 results = [x for x in results if x.last_result]
