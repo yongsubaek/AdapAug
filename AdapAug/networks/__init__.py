@@ -27,6 +27,8 @@ def get_model(conf, num_class=10, local_rank=-1):
         model = WideResNet(40, 2, dropout_rate=0.0, num_classes=num_class)
     elif name == 'wresnet28_10':
         model = WideResNet(28, 10, dropout_rate=0.0, num_classes=num_class)
+    elif name == 'wresnet28_2':
+        model = WideResNet(28, 2, dropout_rate=0.0, num_classes=num_class)
 
     elif name == 'shakeshake26_2x32d':
         model = ShakeResNet(26, 32, num_class)

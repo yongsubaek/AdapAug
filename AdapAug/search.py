@@ -23,7 +23,7 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from AdapAug.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from AdapAug.augmentations import augment_list
 from AdapAug.common import get_logger, add_filehandler
-from AdapAug.data import get_dataloaders
+from AdapAug.data_archive import old_get_dataloaders
 from AdapAug.metrics import Accumulator
 from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
@@ -97,7 +97,7 @@ def get_affinity(aug, aff_bases, config, augment):
 
     aug_loaders = []
     for cv_id in range(cv_num):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id)
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id)
         aug_loaders.append(validloader)
         del tl, tl2
 
@@ -167,7 +167,7 @@ def eval_tta(config, augment, reporter):
 
     loaders = []
     for _ in range(augment['num_policy']):  # TODO
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_fold)
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_fold)
         loaders.append(iter(validloader))
         del tl, tl2
 
@@ -234,7 +234,7 @@ def eval_tta2(config, augment, reporter):
 
     loaders = []
     for i in range(num_repeat):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id)
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id)
         loaders.append(validloader)
         del tl, tl2
 
@@ -304,11 +304,12 @@ if __name__ == '__main__':
     logger.info('initialize ray...')
     ray.init(address=args.redis)
 
+    bench_policy_set = C.get()['aug']
     num_result_per_cv = args.rpc
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     copied_c = copy.deepcopy(C.get().conf)
-    # dataloaders = get_dataloaders(C.get()['dataset'], C.get()['batch'], C.get()['dataroot'], args.cv_ratio)
+    # dataloaders = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], C.get()['dataroot'], args.cv_ratio)
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
@@ -352,75 +353,82 @@ if __name__ == '__main__':
 
     if args.until == 1:
         sys.exit(0)
+    if args.load_search is None:
+        logger.info('----- Search Test-Time Augmentation Policies -----')
+        w.start(tag='search')
 
-    logger.info('----- Search Test-Time Augmentation Policies -----')
-    w.start(tag='search')
+        ops = augment_list(False)
+        space = {}
+        for i in range(args.num_policy):
+            for j in range(args.num_op):
+                space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
+                # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+                space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    ops = augment_list(False)
-    space = {}
-    for i in range(args.num_policy):
-        for j in range(args.num_op):
-            space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-            space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
-            space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
+        num_process_per_gpu = 3
+        final_policy_set = []
+        total_computation = 0
+        reward_attr = 'top1_valid'      # top1_valid or minus_loss
+        # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+        for _ in range(args.repeat):  # run multiple times.
+            for cv_fold in range(cv_num):
+                name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
+                print(name)
+                # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                # wr = csv.writer(bo_log_file)
+                # wr.writerow(result_to_save)
+                register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
+                algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+                algo = ConcurrencyLimiter(algo, max_concurrent=20)
 
-    num_process_per_gpu = 1#2 if torch.cuda.device_count() == 8 else 3
-    final_policy_set = []
-    total_computation = 0
-    reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
-    for _ in range(args.repeat):  # run multiple times.
-        for cv_fold in range(cv_num):
-            name = "search_%s_%s_fold%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], cv_fold, args.cv_ratio)
-            print(name)
-            # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-            # wr = csv.writer(bo_log_file)
-            # wr.writerow(result_to_save)
-            register_trainable(name, lambda augs, reporter: eval_tta(copy.deepcopy(copied_c), augs, reporter))
-            algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-            algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu * torch.cuda.device_count())
+                experiment_spec = Experiment(
+                    name,
+                    run=name,
+                    num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                    resources_per_trial={'gpu': 1./num_process_per_gpu},
+                    stop={'training_iteration': args.iter},
+                    config={
+                            'dataroot': args.dataroot, 'save_path': paths[cv_fold],
+                            'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
+                            'num_op': args.num_op, 'num_policy': args.num_policy
+                        },
+                    local_dir=os.path.join(base_path, "ray_results"),
+                    )
+                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                results = analysis.trials
+                print()
+                results = [x for x in results if x.last_result and reward_attr in x.last_result]
+                # results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                # for res in results:
+                #     wr.writerow([res.last_result[k] for k in result_to_save])
+                # bo_log_file.close()
+                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+                # calculate computation usage
+                for result in results:
+                    total_computation += result.last_result['elapsed_time']
 
-            experiment_spec = Experiment(
-                name,
-                run=name,
-                num_samples=args.num_search,# if r == args.repeat-1 else 25,
-                resources_per_trial={'gpu': 1./num_process_per_gpu},
-                stop={'training_iteration': args.iter},
-                config={
-                        'dataroot': args.dataroot, 'save_path': paths[cv_fold],
-                        'cv_ratio_test': args.cv_ratio, 'cv_fold': cv_fold,
-                        'num_op': args.num_op, 'num_policy': args.num_policy
-                    },
-                local_dir=os.path.join(base_path, "ray_results"),
-                )
-            analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False,
-                            global_checkpoint_period=np.inf)
-            results = analysis.trials
-            print()
-            results = [x for x in results if x.last_result and reward_attr in x.last_result]
-            # results = sorted(results, key=lambda x: x.last_result['timestamp'])
-            # for res in results:
-            #     wr.writerow([res.last_result[k] for k in result_to_save])
-            # bo_log_file.close()
-            results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-            # calculate computation usage
-            for result in results:
-                total_computation += result.last_result['elapsed_time']
-
-            for result in results[:num_result_per_cv]:
-                final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
-                logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
-                final_policy = remove_deplicates(final_policy)
-                final_policy_set.extend(final_policy)
-
+                for result in results[:num_result_per_cv]:
+                    final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                    logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                    final_policy = remove_deplicates(final_policy)
+                    final_policy_set.extend(final_policy)
+        torch.save({
+            "bench_policy": bench_policy_set,
+            "final_policy": final_policy_set,
+        }, base_path+"/search_summary.pt")
+    else:
+        search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
+        search_info = torch.load(search_load_path)
+        final_policy_set = search_info["final_policy"]
+        logger.info(json.dumps(final_policy_set))
+        logger.info("loaded search info from {}".format(search_load_path))
     logger.info(json.dumps(final_policy_set))
     logger.info('final_policy=%d' % len(final_policy_set))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
 
-    num_experiments = torch.cuda.device_count()
-    bench_policy_set = C.get()['aug']
+    num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_set, 0.0, 0, save_path=default_path[_], skip_exist=True) for _ in range(num_experiments)] + \
@@ -479,8 +487,6 @@ if __name__ == '__main__':
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
     torch.save({
-        "bench_policy": bench_policy_set,
-        "final_policy": final_policy_set,
         "aug_affs": aug_affs,
         "aug_divs": aug_divs,
         "bench_affs": bench_affs,

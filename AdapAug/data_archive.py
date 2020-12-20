@@ -187,8 +187,8 @@ class GrAugData(Dataset):
         img = Image.fromarray(img)
 
         if self.transform is not None:
-            if self.gr_ids is not None and self.gr_policies is not None:
-                gr_id = self.gr_ids[index]
+            if True:#self.gr_ids is not None and self.gr_policies is not None:
+                gr_id = target#self.gr_ids[index]
                 img = Augmentation(self.gr_policies[gr_id])(img)
             img = self.transform(img)
 
@@ -661,7 +661,7 @@ def get_post_dataloader(dataset, batch, dataroot, split, split_idx, gr_assign=No
     else:
         return validloader
 
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, controller=None, _transform=None, rand_val=False, batch_multiplier=1, validation=False):
+def old_get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=False, target_lb=-1, gr_assign=None, gr_id=None, gr_ids=None, controller=None, _transform=None, rand_val=False, batch_multiplier=1, validation=False):
     if _transform is None:
         _transform = C.get()['aug']
     if 'cifar' in dataset or 'svhn' in dataset:
