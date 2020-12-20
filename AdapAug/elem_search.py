@@ -139,7 +139,7 @@ if __name__ == '__main__':
     parser.add_argument('--version', type=int, default=1)
     parser.add_argument('--childaug', type=str, default="default")
     parser.add_argument('--mode', type=str, default="ppo")
-    parser.add_argument('--load_search', type=str)
+    parser.add_argument('--load_search', action='store_true')
     parser.add_argument('--rand_search', action='store_true')
     parser.add_argument('--exp_name', type=str)
 

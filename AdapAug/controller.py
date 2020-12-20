@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import numpy as np
+from AdapAug.networks.resnet import ResNet
+from theconf import Config as C
 
 class Controller(nn.Module):
     def __init__(self,
@@ -43,21 +45,22 @@ class Controller(nn.Module):
                               num_layers=self.lstm_num_layers)
         if self.img_input:
             # input CNN
-            self.conv_input = nn.Sequential(
-                # Input size: [batch, 3, 32, 32]
-                # Output size: [1, batch, lstm_size]
-                nn.Conv2d(3, 16, 3, stride=2, padding=1),            # [batch, 16, 16, 16]
-                nn.ReLU(),
-                nn.Conv2d(16, 32, 3, stride=2, padding=1),           # [batch, 32, 8, 8]
-                nn.BatchNorm2d(32),
-                nn.ReLU(),
-    			nn.Conv2d(32, 64, 3, stride=2, padding=1),           # [batch, 64, 4, 4]
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.AvgPool2d(2, stride=2),                            # [batch, 64, 2, 2]
-                nn.Flatten(),
-                nn.Linear(64*2*2, self.emb_size)
-            )
+            # self.conv_input = nn.Sequential(
+            #     # Input size: [batch, 3, 32, 32]
+            #     # Output size: [1, batch, lstm_size]
+            #     nn.Conv2d(3, 16, 3, stride=2, padding=1),            # [batch, 16, 16, 16]
+            #     nn.ReLU(),
+            #     nn.Conv2d(16, 32, 3, stride=2, padding=1),           # [batch, 32, 8, 8]
+            #     nn.BatchNorm2d(32),
+            #     nn.ReLU(),
+    		# 	nn.Conv2d(32, 64, 3, stride=2, padding=1),           # [batch, 64, 4, 4]
+            #     nn.BatchNorm2d(64),
+            #     nn.ReLU(),
+            #     nn.AvgPool2d(2, stride=2),                            # [batch, 64, 2, 2]
+            #     nn.Flatten(),
+            #     nn.Linear(64*2*2, self.emb_size)
+            # )
+            self.conv_input = ResNet(dataset=C.get()['dataset'], depth=18, num_classes=self.emb_size, bottleneck=True)
         else:
             self.in_emb = nn.Embedding(1, self.emb_size)  # Learn the starting input
         # LSTM output to Categorical logits
