@@ -49,7 +49,7 @@ def train_ctl_wrapper(config, augment, reporter):
         if 'div_w' not in augment:
             augment['div_w'] = 1-augment['aff_w']
         # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
-        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_lr{augment['c_lr']:.4f}_{augment['cv_id']}"
+        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_ew{augment['ctl_entropy_w']:e}_{augment['cv_id']}"
     else:
         train_ctl = train_controller
 
@@ -94,7 +94,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--random', action='store_true')
-    parser.add_argument('--version', type=int, default=2)
+    parser.add_argument('--version', type=int, default=3)
     parser.add_argument('--childaug', type=str, default="clean")
     parser.add_argument('--load_search', type=str)
     parser.add_argument('--rand_search', action='store_true')
@@ -176,7 +176,7 @@ if __name__ == '__main__':
             'lstm_size': args.lstm_size, 'emb_size': args.emb_size,
             'childaug': args.childaug, 'version': args.version, 'cv_num': cv_num, 'dataset': C.get()['dataset'],
             'model_type': C.get()['model']['type'], 'base_path': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models'),
-            'ctl_train_steps': args.c_step, 'c_lr': args.c_lr, 'M': args.M,
+            'ctl_train_steps': args.c_step, 'c_lr': args.c_lr, 'M': args.M, 'ctl_entropy_w': 1e-5,
             'num_policy': args.num_policy, 'validation': args.validation
             # 'cv_id': args.cv_id,
             # 'num_policy': args.num_policy,
@@ -205,14 +205,24 @@ if __name__ == '__main__':
                 'aff_step': args.a_step,
                 'div_step': args.d_step,
                 })
+        # space = {# search params
+        #         'mode': "ppo",
+        #         # 'aff_w': tune.sample_from(lambda spec: round((np.random.beta(0.5, 0.5)+0.001)/1.002,3)),
+        #         'aff_w': 0.1,
+        #         'div_w': 0.9,
+        #         'ctl_entropy_w': 1e-4,
+        #         'reward_type': 1,
+        #         'cv_id': tune.grid_search([0,1,2,3,4]),
+        #         'num_policy': 2,
+        #         }
         space = {# search params
-                'mode': "ppo",
-                'aff_w': tune.sample_from(lambda spec: round((np.random.beta(0.5, 0.5)+0.001)/1.002,3)),
-                'div_w': tune.sample_from(lambda spec: round(1.-spec.config.aff_w,3)),
-                'reward_type': 3,
+                'mode': "reinforce",
+                'aff_w': tune.grid_search([0.99,0.9,0.5,0.1,0.01]),
+                # 'div_w': tune.choice([0.99,0.9,0.5,0.1,0.01]),
+                'reward_type': 4,
                 'cv_id': 0,
                 'num_policy': 2,
-                'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
+                # 'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
                 }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
@@ -223,13 +233,13 @@ if __name__ == '__main__':
         # current_best_params = [{'mode': 0, 'aff_w': 1, 'div_w': 3, 'reward_type': 0, 'cv_id': 0, 'num_policy': 1}, # 0.8423 ['ppo', 10.0, 1000.0, 1, 0, 2]
         #                        {'mode': 1, 'aff_w': 1, 'div_w': 3, 'reward_type': 2, 'cv_id': 0, 'num_policy': 1}] # 0.8422 ['reinforce', 10.0, 1000.0, 3, 0, 2]
     ctl_config.update(space)
-    num_process_per_gpu = 2
+    num_process_per_gpu = 1
     name = args.search_name
     reward_attr = 'test_acc'
     scheduler = AsyncHyperBandScheduler()
     register_trainable(name, lambda augment, reporter: train_ctl_wrapper(copy.deepcopy(copied_c), augment, reporter))
-    # algo = HyperOptSearch(points_to_evaluate=current_best_params)
-    # algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
+    algo = HyperOptSearch(points_to_evaluate=current_best_params)
+    algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
     experiment_spec = Experiment(
         name,
         run=name,

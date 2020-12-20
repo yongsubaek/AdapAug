@@ -479,7 +479,7 @@ def train_controller3(controller, config):
     load_search = config['load_search']
     childaug = config['childaug']
 
-    eps_clip = 0.2
+    eps_clip = 0.1
     ctl_entropy_w = config['ctl_entropy_w']
     ctl_ema_weight = 0.95
     cv_id = 0 if config['cv_id'] is None else config['cv_id']
@@ -506,19 +506,19 @@ def train_controller3(controller, config):
         #                         nesterov=C.get()['optimizer'].get('nesterov', True)
         #                         )
     else:
-        # c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
-        c_optimizer = optim.SGD(controller.parameters(),
-                                lr=config['c_lr'],
-                                momentum=C.get()['optimizer'].get('momentum', 0.9),
-                                weight_decay=0.0,
-                                nesterov=C.get()['optimizer'].get('nesterov', True)
-                                )
-    c_scheduler = GradualWarmupScheduler(
-        c_optimizer,
-        multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
-        total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
-        after_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(c_optimizer, T_max=C.get()['epoch'], eta_min=0.)
-    )
+        c_optimizer = optim.Adam(controller.parameters(), lr = config['c_lr'])#, weight_decay=1e-6)
+        # c_optimizer = optim.SGD(controller.parameters(),
+        #                         lr=config['c_lr'],
+        #                         momentum=C.get()['optimizer'].get('momentum', 0.9),
+        #                         weight_decay=0.0,
+        #                         nesterov=C.get()['optimizer'].get('nesterov', True)
+        #                         )
+    # c_scheduler = GradualWarmupScheduler(
+    #     c_optimizer,
+    #     multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
+    #     total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
+    #     after_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(c_optimizer, T_max=C.get()['epoch'], eta_min=0.)
+    # )
     # load childnet weights
     childnet = get_model(C.get()['model'], num_class(dataset), local_rank=-1).cuda()
     data = torch.load(childnet_paths[cv_id])
@@ -539,7 +539,7 @@ def train_controller3(controller, config):
     t_optimizer, t_scheduler = get_optimizer(t_net)
     criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0), reduction="batched_sum").cuda()
     _criterion = CrossEntropyLabelSmooth(num_class(dataset), C.get().conf.get('lb_smooth', 0)).cuda()
-    if batch_multiplier > 1:
+    if torch.cuda.device_count() > 1 and batch_multiplier > 1:
         t_net = DataParallel(t_net).cuda()
         if controller.img_input:
             controller = DataParallel(controller).cuda()
@@ -590,6 +590,7 @@ def train_controller3(controller, config):
         _, total_loader, valid_loader, test_loader = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, \
                                                      rand_val=True, controller=controller, _transform="default", validation=config['validation'], batch_multiplier=batch_multiplier)
         t_net.train()
+        # valid_loader = total_loader
         d_tracker, d_metrics = run_epoch(t_net, total_loader, criterion, t_optimizer, desc_default='T-train', epoch=epoch+1, scheduler=t_scheduler, wd=C.get()['optimizer']['decay'], verbose=False, \
                                         trace=True, get_trace=['clean_loss'] if reward_type==2 else [], batch_multiplier=batch_multiplier)
         total_t_train_time += time.time() - ts
@@ -669,9 +670,9 @@ def train_controller3(controller, config):
                     'pol_loss': pol_loss.cpu().detach().sum().item(),
                     'reward': _d_rewards[step].sum().item(),
                     })
-            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-            c_optimizer.step()
-            c_optimizer.zero_grad()
+                # torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+                # c_optimizer.step()
+                # c_optimizer.zero_grad()
             logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'] / 'cnt'}")
         # Get affinity loss
         if aff_w != 0.:
@@ -707,11 +708,11 @@ def train_controller3(controller, config):
                     'pol_loss': pol_loss.cpu().detach().sum().item(),
                     'reward': _a_rewards[step].sum().item(),
                     })
-            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-            c_optimizer.step()
-            c_optimizer.zero_grad()
             logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
-        c_scheduler.step(epoch)
+        torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+        c_optimizer.step()
+        c_optimizer.zero_grad()
+        # c_scheduler.step(epoch)
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             # TargetNetwork Test

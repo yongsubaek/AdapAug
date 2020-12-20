@@ -7,10 +7,7 @@ import numpy as np
 import torch
 from torchvision.transforms.transforms import Compose
 
-random_mirror = True
-
-def HorizontalFlip(img, v):
-    return
+random_mirror = False
 
 def ShearX(img, v):  # [-0.3, 0.3]
     assert -0.3 <= v <= 0.3, "v=%f" % v
@@ -63,15 +60,21 @@ def Rotate(img, v):  # [-30, 30]
     return img.rotate(v)
 
 
-def AutoContrast(img, _):
+def AutoContrast(img, v):
+    # if 0.5 > v:
+    #     return img
     return PIL.ImageOps.autocontrast(img)
 
 
-def Invert(img, _):
+def Invert(img, v):
+    # if 0.5 > v:
+    #     return img
     return PIL.ImageOps.invert(img)
 
 
-def Equalize(img, _):
+def Equalize(img, v):
+    # if 0.5 > v:
+    #     return img
     return PIL.ImageOps.equalize(img)
 
 
