@@ -10,6 +10,7 @@ import numpy as np
 from hyperopt import hp
 import ray
 import gorilla
+from ray.tune.schedulers import AsyncHyperBandScheduler
 from ray.tune.trial import Trial
 from ray.tune.trial_runner import TrialRunner
 from ray.tune.suggest.hyperopt import HyperOptSearch
@@ -23,14 +24,15 @@ if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from AdapAug.archive import remove_deplicates, policy_decoder, fa_reduced_svhn, fa_reduced_cifar10
 from AdapAug.augmentations import augment_list
 from AdapAug.common import get_logger, add_filehandler
-from AdapAug.data_archive import get_dataloaders
+from AdapAug.data_archive import old_get_dataloaders
 from AdapAug.metrics import Accumulator, accuracy
 from AdapAug.networks import get_model, num_class
 from AdapAug.train import train_and_eval
 from theconf import Config as C, ConfigArgumentParser
 from AdapAug.group_assign import *
 import csv
-
+import warnings
+warnings.filterwarnings("ignore")
 top1_valid_by_cv = defaultdict(lambda: list)
 
 def save_res(fname, *args):
@@ -69,13 +71,13 @@ def get_affinity(aug, aff_bases, config, augment):
     C.get()
     C.get().conf = config
     # setup - provided augmentation rules
-    C.get()['aug'] = aug
+    # C.get()['aug'] = aug
     load_paths = augment['load_paths']
     cv_num = augment["cv_num"]
 
     aug_loaders = []
     for cv_id in range(cv_num):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_assign=augment["gr_assign"])
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], augment['cv_ratio_test'], split_idx=cv_id, gr_assign=augment["gr_assign"], _transform=aug)
         aug_loaders.append(validloader)
         del tl, tl2
 
@@ -125,8 +127,9 @@ def _get_path(dataset, model, tag, basemodel=True):
     return os.path.join(base_path, '%s_%s_%s.model' % (dataset, model, tag))     # TODO
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=1, max_calls=1)
 def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, save_path=None, skip_exist=False, gr_assign=None):
+    warnings.filterwarnings("ignore")
     C.get()
     C.get().conf = config
     C.get()['aug'] = augment
@@ -134,6 +137,7 @@ def train_model(config, dataloaders, dataroot, augment, cv_ratio_test, cv_id, sa
     return C.get()['model']['type'], cv_id, result
 
 def eval_tta(config, augment, reporter):
+    warnings.filterwarnings("ignore")
     C.get()
     C.get().conf = config
     cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
@@ -153,7 +157,7 @@ def eval_tta(config, augment, reporter):
 
     loaders = []
     for _ in range(augment['num_policy']):  # TODO
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], target_lb=gr_id)
         loaders.append(iter(validloader))
         del tl, tl2
 
@@ -201,6 +205,7 @@ def eval_tta(config, augment, reporter):
     return metrics['correct']
 
 def eval_tta2(config, augment, reporter):
+    warnings.filterwarnings("ignore")
     C.get()
     C.get().conf = config
     cv_ratio_test, cv_id, save_path = augment['cv_ratio_test'], augment['cv_id'], augment['save_path']
@@ -221,7 +226,7 @@ def eval_tta2(config, augment, reporter):
 
     loaders = []
     for i in range(num_repeat):
-        _, tl, validloader, tl2 = get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], gr_id=gr_id)
+        _, tl, validloader, tl2 = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], augment['dataroot'], cv_ratio_test, split_idx=cv_id, gr_assign=augment["gr_assign"], target_lb=gr_id)
         loaders.append(validloader)
         del tl, tl2
 
@@ -280,6 +285,7 @@ if __name__ == '__main__':
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--iter', type=int, default=5)
     parser.add_argument('--childaug', type=str, default="clean")
+    parser.add_argument('--load_search', type=str)
 
     args = parser.parse_args()
     C.get()['exp_name'] = args.exp_name
@@ -294,9 +300,10 @@ if __name__ == '__main__':
     logger.info('initialize ray...')
     ray.init(address=args.redis)
 
+    bench_policy_group = C.get()['aug']
     num_result_per_cv = args.rpc
     gr_num = args.gr_num
-    gr_assign = gen_assign_group(version=args.version, num_group=gr_num)
+    gr_assign = None#gen_assign_group(version=args.version, num_group=gr_num)
     cv_num = args.cv_num
     C.get()["cv_num"] = cv_num
     copied_c = copy.deepcopy(C.get().conf)
@@ -343,87 +350,96 @@ if __name__ == '__main__':
     logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
     if args.until == 1:
         sys.exit(0)
+    if args.load_search is None:
+        logger.info('----- Search Test-Time Augmentation Policies -----')
+        w.start(tag='search')
+        ops = augment_list(False)
+        space = {}
+        for i in range(args.num_policy):
+            for j in range(args.num_op):
+                space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
+                # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
+                space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
 
-    logger.info('----- Search Test-Time Augmentation Policies -----')
-    w.start(tag='search')
-    ops = augment_list(False)
-    space = {}
-    for i in range(args.num_policy):
-        for j in range(args.num_op):
-            space['policy_%d_%d' % (i, j)] = hp.choice('policy_%d_%d' % (i, j), list(range(0, len(ops))))
-            # space['prob_%d_%d' % (i, j)] = hp.uniform('prob_%d_ %d' % (i, j), 0.0, 1.0)
-            space['level_%d_%d' % (i, j)] = hp.uniform('level_%d_ %d' % (i, j), 0.0, 1.0)
+        num_process_per_gpu = 3
+        total_computation = 0
+        reward_attr = 'top1_valid'      # top1_valid or minus_loss
+        # result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
+        final_policy_group = defaultdict(lambda : [])
+        for _ in range(args.repeat):  # run multiple times.
+            for gr_id in range(gr_num):
+                for cv_id in range(cv_num):
+                    final_policy_set = []
+                    name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
+                    print(name)
+                    # bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
+                    # wr = csv.writer(bo_log_file)
+                    # wr.writerow(result_to_save)
+                    register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
+                    algo = HyperOptSearch(space, metric=reward_attr, mode="max")
+                    algo = ConcurrencyLimiter(algo, max_concurrent=20)
+                    experiment_spec = Experiment(
+                        name,
+                        run=name,
+                        num_samples=args.num_search,# if r == args.repeat-1 else 25,
+                        resources_per_trial={'gpu': 1./num_process_per_gpu},
+                        stop={'training_iteration': args.iter},
+                        config = {
+                                'dataroot': args.dataroot, 'save_path': paths[cv_id],
+                                'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
+                                'num_op': args.num_op, 'num_policy': args.num_policy,
+                                "gr_assign": gr_assign, "gr_id": gr_id
+                                },
+                        local_dir=os.path.join(base_path, "ray_results"),
+                        )
+                    analysis = run(experiment_spec, search_alg=algo, scheduler=AsyncHyperBandScheduler(), verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
+                    results = analysis.trials
+                    print()
+                    results = [x for x in results if x.last_result]
+                    results = sorted(results, key=lambda x: x.last_result['timestamp'])
+                    # for res in results:
+                    #     wr.writerow([res.last_result[k] for k in result_to_save])
+                    # bo_log_file.close()
+                    results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
+                    # calculate computation usage
+                    for result in results:
+                        total_computation += result.last_result['elapsed_time']
 
-    num_process_per_gpu = 2 if torch.cuda.device_count()==8 else 3
-    total_computation = 0
-    reward_attr = 'top1_valid'      # top1_valid or minus_loss
-    result_to_save = ['timestamp', 'top1_valid', 'minus_loss']
-    final_policy_group = defaultdict(lambda : [])
-    for _ in range(args.repeat):  # run multiple times.
-        for gr_id in range(gr_num):
-            for cv_id in range(cv_num):
-                final_policy_set = []
-                name = "search_%s_%s_group%d_%d_cv%d_ratio%.1f" % (C.get()['dataset'], C.get()['model']['type'], gr_id, gr_num, cv_id, args.cv_ratio)
-                print(name)
-                bo_log_file = open(os.path.join(base_path, name+"_bo_result.csv"), "w", newline="")
-                wr = csv.writer(bo_log_file)
-                wr.writerow(result_to_save)
-                register_trainable(name, lambda augs, reporter: eval_tta2(copy.deepcopy(copied_c), augs, reporter))
-                algo = HyperOptSearch(space, metric=reward_attr, mode="max")
-                algo = ConcurrencyLimiter(algo, max_concurrent=num_process_per_gpu*torch.cuda.device_count())
-                experiment_spec = Experiment(
-                    name,
-                    run=name,
-                    num_samples=args.num_search,# if r == args.repeat-1 else 25,
-                    resources_per_trial={'gpu': 1./num_process_per_gpu},
-                    stop={'training_iteration': args.iter},
-                        'config': {
-                            'dataroot': args.dataroot, 'save_path': paths[cv_id],
-                            'cv_ratio_test': args.cv_ratio, 'cv_id': cv_id,
-                            'num_op': args.num_op, 'num_policy': args.num_policy,
-                            "gr_assign": gr_assign, "gr_id": gr_id
-                    },
-                    local_dir=os.path.join(base_path, "ray_results"),
-                    )
-                analysis = run(experiment_spec, search_alg=algo, scheduler=None, verbose=0, queue_trials=True, resume=args.resume, raise_on_failed_trial=False)
-                results = analysis.trials
-                print()
-                results = [x for x in results if x.last_result]
-                results = sorted(results, key=lambda x: x.last_result['timestamp'])
-                for res in results:
-                    # print(res.last_result)
-                    wr.writerow([res.last_result[k] for k in result_to_save])
-                bo_log_file.close()
-                results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-                # calculate computation usage
-                for result in results:
-                    total_computation += result.last_result['elapsed_time']
-
-                for result in results[:num_result_per_cv]:
-                    final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
-                    logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
-                    final_policy = remove_deplicates(final_policy)
-                    final_policy_set.extend(final_policy)
-                final_policy_group[gr_id].extend(final_policy_set)
-                # probs = []
-                # for aug in final_policy_set:
-                #     for op in aug:
-                #         probs.append(op[1])
-                # prob = sum(probs) / len(probs)
-                # print("mean_prob: {:.2f}".format(prob))
-
+                    for result in results[:num_result_per_cv]:
+                        final_policy = policy_decoder(result.config, args.num_policy, args.num_op)
+                        logger.info('loss=%.12f top1_valid=%.4f %s' % (result.last_result['minus_loss'], result.last_result['top1_valid'], final_policy))
+                        final_policy = remove_deplicates(final_policy)
+                        final_policy_set.extend(final_policy)
+                    final_policy_group[gr_id].extend(final_policy_set)
+                    # probs = []
+                    # for aug in final_policy_set:
+                    #     for op in aug:
+                    #         probs.append(op[1])
+                    # prob = sum(probs) / len(probs)
+                    # print("mean_prob: {:.2f}".format(prob))
+        final_policy_group = dict(final_policy_group)
+        torch.save({
+            "bench_policy": bench_policy_group,
+            "final_policy": final_policy_group,
+        }, base_path+"/search_summary.pt")
+    else:
+        search_load_path = args.load_search if os.path.exists(args.load_search) else base_path+"/search_summary.pt"
+        search_info = torch.load(search_load_path)
+        final_policy_group = search_info["final_policy"]
+        logger.info(json.dumps(final_policy_group))
+        logger.info("loaded search info from {}".format(search_load_path))
     logger.info(json.dumps(final_policy_group))
     logger.info('processed in %.4f secs, gpu hours=%.4f' % (w.pause('search'), total_computation / 3600.))
     logger.info('----- Train with Augmentations model=%s dataset=%s aug=%s ratio(test)=%.1f -----' % (C.get()['model']['type'], C.get()['dataset'], C.get()['aug'], args.cv_ratio))
     w.start(tag='train_aug')
     # g0 = fa_reduced_cifar10()
     # g1 = fa_reduced_svhn()
-    bench_policy_group = C.get()["aug"]
     num_experiments = torch.cuda.device_count() // 2
     default_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_default%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
     augment_path = [_get_path(C.get()['dataset'], C.get()['model']['type'], 'ratio%.1f_augment%d' % (args.cv_ratio, _), basemodel=False) for _ in range(num_experiments)]
+    loaders = old_get_dataloaders(C.get()['dataset'], C.get()['batch'], args.dataroot, 0.0, _transform=final_policy_group)
     reqs = [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, bench_policy_group, 0.0, 0, save_path=default_path[_], skip_exist=True, gr_assign=gr_assign) for _ in range(num_experiments)] + \
-     [train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gr_assign) for _ in range(num_experiments)]
+           [train_model.remote(copy.deepcopy(copied_c), loaders, args.dataroot, final_policy_group, 0.0, 0, save_path=augment_path[_], gr_assign=gr_assign) for _ in range(num_experiments)]
 
     tqdm_epoch = tqdm(range(C.get()['epoch']))
     is_done = False
@@ -479,8 +495,6 @@ if __name__ == '__main__':
         avg /= num_experiments
         logger.info('[%s] top1_test average=%.4f (#experiments=%d)' % (train_mode, avg, num_experiments))
     torch.save({
-        "bench_policy": bench_policy_group,
-        "final_policy": final_policy_group,
         "aug_affs": aug_affs,
         "aug_divs": aug_divs,
         "bench_affs": bench_affs,

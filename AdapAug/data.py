@@ -119,7 +119,7 @@ class AdapAugData(Dataset):
             return (aug_img, img, log_prob, policy), target
         else:
             return img, target
-def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, controller=None, _transform=None, rand_val=False, batch_multiplier=1, validation=False):
+def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=-1, gr_assign=None, gr_ids=None, controller=None, _transform=None, rand_val=False, batch_multiplier=1, validation=False):
     if _transform is None:
         _transform = C.get()['aug']
     if 'cifar' in dataset or 'svhn' in dataset:

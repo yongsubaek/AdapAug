@@ -140,10 +140,7 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
 
         if scheduler is not None:
             scheduler.step(epoch - 1 + float(steps) / total_steps)
-            # if isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
-            #     scheduler.step(epoch - 1 + float(steps) / total_steps)
-            # else:
-            #     scheduler.step()
+
         del preds, loss, top1, top5, data, label
 
     if tqdm_disabled and verbose:
