@@ -670,9 +670,9 @@ def train_controller3(controller, config):
                     'pol_loss': pol_loss.cpu().detach().sum().item(),
                     'reward': _d_rewards[step].sum().item(),
                     })
-                # torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-                # c_optimizer.step()
-                # c_optimizer.zero_grad()
+            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+            c_optimizer.step()
+            c_optimizer.zero_grad()
             logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'] / 'cnt'}")
         # Get affinity loss
         if aff_w != 0.:
@@ -709,9 +709,9 @@ def train_controller3(controller, config):
                     'reward': _a_rewards[step].sum().item(),
                     })
             logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
-        torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-        c_optimizer.step()
-        c_optimizer.zero_grad()
+            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+            c_optimizer.step()
+            c_optimizer.zero_grad()
         # c_scheduler.step(epoch)
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
