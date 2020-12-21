@@ -1,11 +1,11 @@
 model:
-  type: wresnet28_10
-dataset: svhn
+  type: wresnet40_2
+dataset: cifar100
 aug: default
-cutout: 20
+cutout: 16
 batch: 128
 epoch: 200
-lr: 0.01
+lr: 0.1
 lr_schedule:
   type: 'cosine'
   warmup:
@@ -14,5 +14,5 @@ lr_schedule:
 optimizer:
   type: sgd
   nesterov: True
-  decay: 0.0005
+  decay: 0.0002
   ema: 0

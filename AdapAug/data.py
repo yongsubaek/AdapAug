@@ -44,6 +44,7 @@ class AdapAugData(Dataset):
         self.dataname = dataname
         if dataname == "SVHN":
             extraset = torchvision.datasets.__dict__[dataname](transform=None, split='extra', **kargs)
+            self.len_list = [len(dataset), len(extraset)]
             self.data = np.transpose(np.concatenate(dataset.data, extraset.data), (0,2,3,1))
             self.targets = self.labels = list(dataset.labels) + list(extraset.labels)
         else:
@@ -249,6 +250,14 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     elif dataset == 'svhn': #TODO
         if controller is not None or batch_multiplier > 1:
             total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            if split > 0.0:
+                sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
+                sss1 = sss.split(list(range(total_trainset.len_list[0])), total_trainset.targets[:total_trainset.len_list[0]])
+                sss2 = sss.split(list(range(total_trainset.len_list[1])), total_trainset.targets[total_trainset.len_list[0]:])
+                for _ in range(split_idx + 1):
+                    train_idx1, valid_idx1 = next(sss1)
+                    train_idx2, valid_idx2 = next(sss2)
+                train_idx, valid_idx = list(train_idx1)+list(train_idx2), list(valid_idx1)+list(valid_idx2)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
             # extraset = torchvision.datasets.SVHN(root=dataroot, split='extra', download=False, transform=transform_train)
@@ -342,21 +351,21 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             sss = sss.split(list(range(len(total_trainset))), total_trainset.targets)
             for _ in range(split_idx + 1):
                 train_idx, valid_idx = next(sss)
-            if validation:
-                sss = StratifiedShuffleSplit(n_splits=5, test_size=0.25, random_state=0)
-                sss = sss.split(list(range(len(valid_idx))), [total_trainset.targets[idx] for idx in valid_idx])
-                for _ in range(split_idx + 1):
-                    _val_idx, _test_idx = next(sss)
-                test_idx  = [valid_idx[idx] for idx in _test_idx]
-                valid_idx = [valid_idx[idx] for idx in _val_idx] # D_A
-                # build testset
-                total_trainset.controller = None
-                testset = copy.deepcopy(total_trainset)
-                testset.transform = transform_test
-                testset.policies = None
-                testset = Subset(testset, test_idx)
-            if controller is not None: # Adv AA
-                train_idx = list(train_idx) + list(valid_idx) # D_M + D_A
+        if validation:
+            sss = StratifiedShuffleSplit(n_splits=5, test_size=0.25, random_state=0)
+            sss = sss.split(list(range(len(valid_idx))), [total_trainset.targets[idx] for idx in valid_idx])
+            for _ in range(split_idx + 1):
+                _val_idx, _test_idx = next(sss)
+            test_idx  = [valid_idx[idx] for idx in _test_idx]
+            valid_idx = [valid_idx[idx] for idx in _val_idx] # D_A
+            # build testset
+            total_trainset.controller = None
+            testset = copy.deepcopy(total_trainset)
+            testset.transform = transform_test
+            testset.policies = None
+            testset = Subset(testset, test_idx)
+        if controller is not None: # Adv AA
+            train_idx = list(train_idx) + list(valid_idx) # D_T + D_V
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetSampler(valid_idx) if not rand_val else SubsetRandomSampler(valid_idx)
 

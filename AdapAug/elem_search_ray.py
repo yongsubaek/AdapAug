@@ -48,8 +48,8 @@ def train_ctl_wrapper(config, augment, reporter):
         train_ctl = train_controller3
         if 'div_w' not in augment:
             augment['div_w'] = 1-augment['aff_w']
-        # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
-        C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_ew{augment['ctl_entropy_w']:e}_{augment['cv_id']}"
+        C.get()['exp_name'] = f"{augment['dataset']}_{C.get()['model']['type']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.0e}_dw{augment['div_w']:.0e}_rt{augment['reward_type']}_{augment['cv_id']}"
+        # C.get()['exp_name'] = f"{augment['dataset']}_v{augment['version']}_{augment['mode']}_np{augment['num_policy']}_aw{augment['aff_w']:.3e}_rt{augment['reward_type']}_ew{augment['ctl_entropy_w']:e}_{augment['cv_id']}"
     else:
         train_ctl = train_controller
 
