@@ -126,49 +126,49 @@ if __name__ == '__main__':
     logger.info('initialize ray...')
     ray.init(address=args.redis)
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
-    # logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
-    # w.start(tag='train_no_aug')
-    # print(paths)
-    # reqs = [
-    #     train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
-    #     for i in range(cv_num)]
-    #
-    # tqdm_epoch = tqdm(range(C.get()['epoch']))
-    # is_done = False
-    # for epoch in tqdm_epoch:
-    #     while True:
-    #         epochs_per_cv = OrderedDict()
-    #         for cv_idx in range(cv_num):
-    #             try:
-    #                 latest_ckpt = torch.load(paths[cv_idx])
-    #                 if 'epoch' not in latest_ckpt:
-    #                     epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
-    #                     continue
-    #                 epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
-    #             except Exception as e:
-    #                 continue
-    #         tqdm_epoch.set_postfix(epochs_per_cv)
-    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
-    #             is_done = True
-    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
-    #             break
-    #         time.sleep(10)
-    #     if is_done:
-    #         break
-    # logger.info('getting results...')
-    # pretrain_results = ray.get(reqs)
-    # aff_bases = []
-    # for r_model, r_cv, r_dict in pretrain_results:
-    #     logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
-    #     # for Affinity calculation
-    #     aff_bases.append(r_dict['top1_valid'])
-    #     del r_model, r_cv, r_dict
-    # logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
-    # if args.until == 1:
-    #     sys.exit(0)
-    # del latest_ckpt, pretrain_results, reqs
-    # ray.shutdown()
-    # logger.info('----- Search Test-Time Augmentation Policies -----')
+    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
+    w.start(tag='train_no_aug')
+    print(paths)
+    reqs = [
+        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
+        for i in range(cv_num)]
+
+    tqdm_epoch = tqdm(range(C.get()['epoch']))
+    is_done = False
+    for epoch in tqdm_epoch:
+        while True:
+            epochs_per_cv = OrderedDict()
+            for cv_idx in range(cv_num):
+                try:
+                    latest_ckpt = torch.load(paths[cv_idx])
+                    if 'epoch' not in latest_ckpt:
+                        epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
+                        continue
+                    epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
+                except Exception as e:
+                    continue
+            tqdm_epoch.set_postfix(epochs_per_cv)
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+                is_done = True
+            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+                break
+            time.sleep(10)
+        if is_done:
+            break
+    logger.info('getting results...')
+    pretrain_results = ray.get(reqs)
+    aff_bases = []
+    for r_model, r_cv, r_dict in pretrain_results:
+        logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+        # for Affinity calculation
+        aff_bases.append(r_dict['top1_valid'])
+        del r_model, r_cv, r_dict
+    logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
+    if args.until == 1:
+        sys.exit(0)
+    del latest_ckpt, pretrain_results, reqs
+    ray.shutdown()
+    logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search&train')
 
     ctl_config = {
@@ -205,25 +205,25 @@ if __name__ == '__main__':
                 'aff_step': args.a_step,
                 'div_step': args.d_step,
                 })
-        # space = {# search params
-        #         'mode': "ppo",
-        #         # 'aff_w': tune.sample_from(lambda spec: round((np.random.beta(0.5, 0.5)+0.001)/1.002,3)),
-        #         'aff_w': 0.1,
-        #         'div_w': 0.9,
-        #         'ctl_entropy_w': 1e-4,
-        #         'reward_type': 1,
-        #         'cv_id': tune.grid_search([0,1,2,3,4]),
-        #         'num_policy': 2,
-        #         }
         space = {# search params
                 'mode': "reinforce",
-                'aff_w': tune.grid_search([0.99,0.9,0.5,0.1,0.01]),
-                # 'div_w': tune.choice([0.99,0.9,0.5,0.1,0.01]),
+                # 'aff_w': tune.sample_from(lambda spec: round((np.random.beta(0.5, 0.5)+0.001)/1.002,3)),
+                'aff_w': 0.5,
+                'div_w': 0.5,
+                'ctl_entropy_w': 1e-5,
                 'reward_type': 4,
-                'cv_id': 0,
+                'cv_id': tune.grid_search([0,1,2,3,4]),
                 'num_policy': 2,
-                # 'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
                 }
+        # space = {# search params
+        #         'mode': "reinforce",
+        #         'aff_w': tune.grid_search([0.99,0.9,0.5,0.1,0.01]),
+        #         # 'div_w': tune.choice([0.99,0.9,0.5,0.1,0.01]),
+        #         'reward_type': 4,
+        #         'cv_id': 0,
+        #         'num_policy': 2,
+        #         # 'c_lr': tune.qloguniform(1e-4,1e-1,5e-5),
+        #         }
         current_best_params = []
         # best result of cifar10-wideresnet-28-10
         # current_best_params = [{'mode': 1, 'aff_w': 3, 'div_w': 2, 'reward_type': 2, 'cv_id': 2, 'num_policy': 2}, # 0.9740 ['reinforce', 100.0, 1000.0, 3, 2, 5]
@@ -256,11 +256,10 @@ if __name__ == '__main__':
     results = analysis.trials
     results = [x for x in results if x.last_result and reward_attr in x.last_result]
     results = sorted(results, key=lambda x: x.last_result[reward_attr], reverse=True)
-    # report = defaultdict(list)
+    report = []
     for result in results:
         logger.info(f"affinity={result.last_result['affinity']:.4f} diversity={result.last_result['diversity']:.4f} test_acc={result.last_result['test_acc']:.4f}\
                     \n{ dict( (k, result.config[k]) for k in space ) }")
-    #     report[result.config['aff_w']].append(result.last_result[reward_attr])
-    # for k in report:
-    #     logger.info(f"{k}: {np.mean(report[k]):.4f}")
+        report.append(result.last_result[reward_attr])
+    logger.info(f"{reward_attr}: {100*np.mean(report):.3f}+-{100*np.std(report):.3f}")
     logger.info(w)
