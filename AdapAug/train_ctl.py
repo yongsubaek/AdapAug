@@ -636,8 +636,47 @@ def train_controller3(controller, config):
                 else:
                     a_baseline = ExponentialMovingAverage(ctl_ema_weight)
 
-        # Get diversity loss
         controller.train()
+        # Get diversity loss
+        # Get affinity loss
+        if aff_w != 0.:
+            for step, reward in enumerate(a_rewards):
+                if aff_step is not None and step >= aff_step: break
+                st = time.time()
+                inputs, labels = a_dict['clean_data'][step]
+                batch_size = len(labels)*batch_multiplier
+                inputs, labels = inputs.cuda(), labels.cuda()
+                policy = a_dict['policy'][step].cuda()
+                top1 = a_dict['acc'][step]
+                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy)
+                if reward_type == 0:
+                    a_baseline.update(reward.mean())
+                    advantages = reward - a_baseline.value()
+                else:
+                    advantages = reward
+                if mode == "reinforce":
+                    pol_loss = -1 * (log_probs * advantages)
+                elif mode == 'ppo':
+                    old_log_probs = a_dict['log_probs'][step].cuda()
+                    ratios = (log_probs - old_log_probs).exp()
+                    surr1 = ratios * advantages
+                    surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
+                    pol_loss = -torch.min(surr1, surr2)
+                # a_loss += (aff_w * pol_loss - ctl_entropy_w * entropys).sum()
+                a_loss = (len(total_loader)/len(valid_loader))*(aff_w*(1-top1)*pol_loss - ctl_entropy_w * entropys).sum()
+                a_loss.backward(retain_graph=True)
+                trace['affinity'].add_dict({
+                    'cnt': batch_size,
+                    'time': time.time()-st,
+                    'acc': top1*batch_size,
+                    'pol_loss': pol_loss.cpu().detach().sum().item(),
+                    'reward': _a_rewards[step].sum().item(),
+                    })
+            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
+            c_optimizer.step()
+            c_optimizer.zero_grad()
+            logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
+
         if div_w != 0.:
             for step, reward in enumerate(d_rewards):
                 if div_step is not None and step >= div_step: break
@@ -674,45 +713,9 @@ def train_controller3(controller, config):
             c_optimizer.step()
             c_optimizer.zero_grad()
             logger.info(f"(Diversity){epoch+1:3d}/{C.get()['epoch']:3d} {trace['diversity'] / 'cnt'}")
-        # Get affinity loss
-        if aff_w != 0.:
-            for step, reward in enumerate(a_rewards):
-                if aff_step is not None and step >= aff_step: break
-                st = time.time()
-                inputs, labels = a_dict['clean_data'][step]
-                batch_size = len(labels)*batch_multiplier
-                inputs, labels = inputs.cuda(), labels.cuda()
-                policy = a_dict['policy'][step].cuda()
-                top1 = a_dict['acc'][step]
-                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy)
-                if reward_type == 0:
-                    a_baseline.update(reward.mean())
-                    advantages = reward - a_baseline.value()
-                else:
-                    advantages = reward
-                if mode == "reinforce":
-                    pol_loss = -1 * (log_probs * advantages)
-                elif mode == 'ppo':
-                    old_log_probs = a_dict['log_probs'][step].cuda()
-                    ratios = (log_probs - old_log_probs).exp()
-                    surr1 = ratios * advantages
-                    surr2 = torch.clamp(ratios, 1-eps_clip, 1+eps_clip) * advantages
-                    pol_loss = -torch.min(surr1, surr2)
-                # a_loss += (aff_w * pol_loss - ctl_entropy_w * entropys).sum()
-                a_loss = (len(total_loader)/len(valid_loader))*(aff_w*(1-top1)*pol_loss - ctl_entropy_w * entropys).sum()
-                a_loss.backward(retain_graph=True)
-                trace['affinity'].add_dict({
-                    'cnt': batch_size,
-                    'time': time.time()-st,
-                    'acc': top1*batch_size,
-                    'pol_loss': pol_loss.cpu().detach().sum().item(),
-                    'reward': _a_rewards[step].sum().item(),
-                    })
-            logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
-            torch.nn.utils.clip_grad_norm_(controller.parameters(), 5.0)
-            c_optimizer.step()
-            c_optimizer.zero_grad()
+
         # c_scheduler.step(epoch)
+
 
         if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             # TargetNetwork Test

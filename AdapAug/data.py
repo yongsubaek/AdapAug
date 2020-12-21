@@ -42,8 +42,13 @@ class AdapAugData(Dataset):
     def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kargs):
         dataset = torchvision.datasets.__dict__[dataname](transform=None, **kargs)
         self.dataname = dataname
-        self.data = dataset.data if dataname != "SVHN" else np.transpose(dataset.data, (0,2,3,1))
-        self.targets = self.labels = dataset.targets if dataname != "SVHN" else dataset.labels
+        if dataname == "SVHN":
+            extraset = torchvision.datasets.__dict__[dataname](transform=None, split='extra', **kargs)
+            self.data = np.transpose(np.concatenate(dataset.data, extraset.data), (0,2,3,1))
+            self.targets = self.labels = list(dataset.labels) + list(extraset.labels)
+        else:
+            self.data = dataset.data
+            self.targets = self.labels = dataset.targets
         self.transform = transform
 
         # for i,x in enumerate(transform.transforms):
@@ -242,9 +247,13 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             total_trainset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR100(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'svhn': #TODO
-        trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
-        extraset = torchvision.datasets.SVHN(root=dataroot, split='extra', download=False, transform=transform_train)
-        total_trainset = ConcatDataset([trainset, extraset])
+        if controller is not None or batch_multiplier > 1:
+            total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+        else:
+            total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
+            # extraset = torchvision.datasets.SVHN(root=dataroot, split='extra', download=False, transform=transform_train)
+            # total_trainset = ConcatDataset([trainset, extraset])
+            total_trainset.targets = total_trainset.labels
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
     elif dataset == 'reduced_svhn':
         if controller is not None or batch_multiplier > 1:
