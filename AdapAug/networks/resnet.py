@@ -83,11 +83,10 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
     def __init__(self, dataset, depth, num_classes, bottleneck=False):
-        super(ResNet, self).__init__()        
+        super(ResNet, self).__init__()
         self.dataset = dataset
-        if self.dataset.startswith('cifar'):
+        if 'cifar' in dataset or 'svhn' in dataset:
             self.inplanes = 16
-            print(bottleneck)
             if bottleneck == True:
                 n = int((depth - 2) / 9)
                 block = Bottleneck
@@ -100,7 +99,7 @@ class ResNet(nn.Module):
             self.relu = nn.ReLU(inplace=True)
             self.layer1 = self._make_layer(block, 16, n)
             self.layer2 = self._make_layer(block, 32, n, stride=2)
-            self.layer3 = self._make_layer(block, 64, n, stride=2) 
+            self.layer3 = self._make_layer(block, 64, n, stride=2)
             # self.avgpool = nn.AvgPool2d(8)
             self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
             self.fc = nn.Linear(64 * block.expansion, num_classes)
@@ -149,11 +148,11 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        if self.dataset == 'cifar10' or self.dataset == 'cifar100':
+        if 'cifar' in self.dataset or 'svhn' in self.dataset:
             x = self.conv1(x)
             x = self.bn1(x)
             x = self.relu(x)
-            
+
             x = self.layer1(x)
             x = self.layer2(x)
             x = self.layer3(x)
@@ -176,5 +175,5 @@ class ResNet(nn.Module):
             x = self.avgpool(x)
             x = x.view(x.size(0), -1)
             x = self.fc(x)
-    
+
         return x

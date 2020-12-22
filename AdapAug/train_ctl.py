@@ -751,6 +751,11 @@ def train_controller3(controller, config):
                         'div_trace': dict(trace['diversity'].trace),
                         'train_metrics': train_metrics,
                         }, ctl_save_path)
+        if (epoch+1) % 30 == 0 or epoch == C.get()['epoch']-1:
+            torch.save({
+                        'epoch': epoch,
+                        'ctl_state_dict': controller.state_dict(),
+                        }, ctl_save_path+f"-{epoch+1}")
         if epoch < C.get()['epoch']-1:
             for k in trace:
                 trace[k].reset_accum()

@@ -39,13 +39,14 @@ _CIFAR_STD2 = (0.2470, 0.2435, 0.2616)
 _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
 class AdapAugData(Dataset):
-    def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kargs):
-        dataset = torchvision.datasets.__dict__[dataname](transform=None, **kargs)
+    def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kwargs):
+        dataset = torchvision.datasets.__dict__[dataname](transform=None, **kwargs)
         self.dataname = dataname
         if dataname == "SVHN":
-            extraset = torchvision.datasets.__dict__[dataname](transform=None, split='extra', **kargs)
+            kwargs['split'] = 'extra'
+            extraset = torchvision.datasets.__dict__[dataname](transform=None, **kwargs)
             self.len_list = [len(dataset), len(extraset)]
-            self.data = np.transpose(np.concatenate(dataset.data, extraset.data), (0,2,3,1))
+            self.data = np.transpose(np.concatenate([dataset.data, extraset.data]), (0,2,3,1))
             self.targets = self.labels = list(dataset.labels) + list(extraset.labels)
         else:
             self.data = dataset.data
