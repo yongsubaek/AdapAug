@@ -427,7 +427,7 @@ class Augmentation(object):
                 if random.random() > pr:
                     continue
                 img = apply_augment(img, name, level)
-            # self.policy = policy
+            self.policy = policy
         return img
 
 class EfficientNetRandomCrop:

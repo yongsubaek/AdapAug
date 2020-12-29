@@ -1,4 +1,7 @@
-#*.ipynb
+*.jpg
+*.png
+*.pdf
+*.ipynb
 data/
 models/
 ray_results/

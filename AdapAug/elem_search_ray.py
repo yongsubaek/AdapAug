@@ -96,7 +96,7 @@ if __name__ == '__main__':
     parser.add_argument('--random', action='store_true')
     parser.add_argument('--version', type=int, default=3)
     parser.add_argument('--childaug', type=str, default="clean")
-    parser.add_argument('--load_search', type=str)
+    parser.add_argument('--load_search', action='store_true')
     parser.add_argument('--rand_search', action='store_true')
     parser.add_argument('--lstm_size', type=int, default=100)
     parser.add_argument('--emb_size', type=int, default=32)

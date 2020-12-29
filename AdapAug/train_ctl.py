@@ -562,7 +562,10 @@ def train_controller3(controller, config):
                 t_net.load_state_dict({k if 'module.' in k else 'module.'+k: v for k, v in data[key].items()})
         t_optimizer.load_state_dict(data['optimizer_state_dict'])
         start_epoch = data['epoch']
-        policies = data['policy']
+        # if 'policy' in data:
+        #     policies = data['policy']
+        # else:
+        policies = []
         test_metrics = data['test_metrics']
         del data
     else:
@@ -611,33 +614,31 @@ def train_controller3(controller, config):
             else:
                 d_baseline = ExponentialMovingAverage(ctl_ema_weight)
         ## Childnet BackTracking
-        if aff_w != 0.:
-            # _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, \
-            #                                         rand_val=True, controller=controller, _transform=childaug, validation=config['validation'])
-            a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
-                                            trace=True, get_trace=['logits', 'clean_logits'] if reward_type in [0,1,4] else ['clean_loss'], batch_multiplier=batch_multiplier)
-            train_metrics["affinity"].append(a_metrics.get_dict())
-            a_dict = a_tracker.get_dict()
-            del a_tracker, a_metrics
-            ## Get Affinity & Diversity Rewards from traces
-            with torch.no_grad():
-                if reward_type in [2,3]:
-                    a_rewards = torch.stack(a_dict['loss']).cuda() # [train_len_a, M*batch]
-                    a_clean_loss = torch.stack(a_dict['clean_loss']).cuda() # [train_len_a, batch]
-                    a_rewards = a_clean_loss.repeat(1,batch_multiplier) - a_rewards # affinity approximation (usually negative)
-                else: # reward_type in [0,1,4]
-                    a_rewards = torch.stack(a_dict['logits']).max(-1)[1].cuda() # [train_len_a, M*batch]
-                    a_clean_logits = torch.stack(a_dict['clean_logits']).max(-1)[1].cuda() # [train_len_a, batch]
-                    a_rewards = (a_clean_logits.repeat(1,batch_multiplier) == a_rewards).float() # [train_len_a, M*batch]
-                _a_rewards = a_rewards.cpu().detach()
-                if reward_type > 1:
-                    # normalization
-                    a_rewards = (a_rewards - a_rewards.mean(1).reshape(-1,1).expand(a_rewards.size(0), a_rewards.size(1))) / (a_rewards.std(1).reshape(-1,1).expand(a_rewards.size(0), a_rewards.size(1)) + 1e-6)
-                else:
-                    a_baseline = ExponentialMovingAverage(ctl_ema_weight)
+        # _, _, valid_loader, _ = get_dataloaders(C.get()['dataset'], C.get()['batch'], config['dataroot'], config['split_ratio'], split_idx=cv_id, \
+        #                                         rand_val=True, controller=controller, _transform=childaug, validation=config['validation'])
+        a_tracker, a_metrics = run_epoch(childnet, valid_loader, criterion, None, desc_default='childnet tracking', epoch=epoch+1, verbose=False, \
+                                        trace=True, get_trace=['logits', 'clean_logits'] if reward_type in [0,1,4] else ['clean_loss'], batch_multiplier=batch_multiplier)
+        train_metrics["affinity"].append(a_metrics.get_dict())
+        a_dict = a_tracker.get_dict()
+        del a_tracker, a_metrics
+        ## Get Affinity & Diversity Rewards from traces
+        with torch.no_grad():
+            if reward_type in [2,3]:
+                a_rewards = torch.stack(a_dict['loss']).cuda() # [train_len_a, M*batch]
+                a_clean_loss = torch.stack(a_dict['clean_loss']).cuda() # [train_len_a, batch]
+                a_rewards = a_clean_loss.repeat(1,batch_multiplier) - a_rewards # affinity approximation (usually negative)
+            else: # reward_type in [0,1,4]
+                a_rewards = torch.stack(a_dict['logits']).max(-1)[1].cuda() # [train_len_a, M*batch]
+                a_clean_logits = torch.stack(a_dict['clean_logits']).max(-1)[1].cuda() # [train_len_a, batch]
+                a_rewards = (a_clean_logits.repeat(1,batch_multiplier) == a_rewards).float() # [train_len_a, M*batch]
+            _a_rewards = a_rewards.cpu().detach()
+            if reward_type > 1:
+                # normalization
+                a_rewards = (a_rewards - a_rewards.mean(1).reshape(-1,1).expand(a_rewards.size(0), a_rewards.size(1))) / (a_rewards.std(1).reshape(-1,1).expand(a_rewards.size(0), a_rewards.size(1)) + 1e-6)
+            else:
+                a_baseline = ExponentialMovingAverage(ctl_ema_weight)
 
         controller.train()
-        # Get diversity loss
         # Get affinity loss
         if aff_w != 0.:
             for step, reward in enumerate(a_rewards):
@@ -677,6 +678,7 @@ def train_controller3(controller, config):
             c_optimizer.zero_grad()
             logger.info(f"(Affinity) {epoch+1:3d}/{C.get()['epoch']:3d} {trace['affinity'] / 'cnt'}")
 
+        # Get diversity loss
         if div_w != 0.:
             for step, reward in enumerate(d_rewards):
                 if div_step is not None and step >= div_step: break
@@ -740,7 +742,7 @@ def train_controller3(controller, config):
                         'epoch': epoch,
                         'model':t_net.state_dict(),
                         'optimizer_state_dict': t_optimizer.state_dict(),
-                        'policy': policies,
+                        # 'policy': policies,
                         'test_metrics': test_metrics,
                         }, target_path)
             torch.save({
@@ -751,11 +753,14 @@ def train_controller3(controller, config):
                         'div_trace': dict(trace['diversity'].trace),
                         'train_metrics': train_metrics,
                         }, ctl_save_path)
-        if (epoch+1) % 30 == 0 or epoch == C.get()['epoch']-1:
+        if (epoch+1) % 10 == 0 or epoch == C.get()['epoch']-1:
             torch.save({
                         'epoch': epoch,
                         'ctl_state_dict': controller.state_dict(),
+                        'policy': policies,
                         }, ctl_save_path+f"-{epoch+1}")
+            del policies
+            policies = []
         if epoch < C.get()['epoch']-1:
             for k in trace:
                 trace[k].reset_accum()
