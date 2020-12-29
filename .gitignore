@@ -1,5 +1,5 @@
-*.jpg
-*.png
+# *.jpg
+# *.png
 *.pdf
 *.ipynb
 data/
