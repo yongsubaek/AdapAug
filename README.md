@@ -10,11 +10,11 @@
 ## Result Examples
 - Images from CIFAR-100
 <p>
-<img src="etc/op-dist.png" width=500>
+<img src="etc/aug_process.png" width=400>
 </p>
 - Used Augmentation Distribution
 <p>
-<img src="etc/aug_process.png" width=400>
+<img src="etc/op-dist.png" width=500>
 </p>
 
 ## Run
