@@ -20,6 +20,7 @@ class Controller(nn.Module):
                  tanh_constant=1.5,
                  temperature=None,
                  img_input=True,
+                 group_fnc=None,
                  ):
         super(Controller, self).__init__()
 
@@ -37,6 +38,7 @@ class Controller(nn.Module):
         self._operation_mag = operation_mag
 
         self.img_input = img_input
+        self.group_fnc = group_fnc
         self._create_params()
 
     def _create_params(self):
@@ -62,7 +64,11 @@ class Controller(nn.Module):
             # )
             self.conv_input = ResNet(dataset=C.get()['dataset'], depth=18, num_classes=self.emb_size, bottleneck=True)
         else:
-            self.in_emb = nn.Embedding(1, self.emb_size)  # Learn the starting input
+            if self.group_fnc is None:
+                self.in_emb = nn.Embedding(1, self.emb_size)  # Learn the starting input
+            else:
+                self.in_emb = nn.Embedding(2, self.emb_size)  # Learn the starting input
+
         # LSTM output to Categorical logits
         self.o_logit = nn.Linear(self.lstm_size, self._operation_types)#, bias=False)
         self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
@@ -105,7 +111,7 @@ class Controller(nn.Module):
             logit = self.tanh_constant * torch.tanh(logit)
         return logit
 
-    def forward(self, image=None, policy=None):
+    def forward(self, image=None, policy=None, label=None):
         """
         return: log_probs, entropys, subpolicies
         log_probs: batch of log_prob, (tensor)[batch or 1]
@@ -119,7 +125,11 @@ class Controller(nn.Module):
         if self.img_input:
             inputs = self.conv_input(image)                 # [batch, lstm_size]
         else:
-            inputs = self.in_emb.weight                     # [1, lstm_size]
+            if self.group_fnc is None:
+                inputs = self.in_emb.weight                  # [1, lstm_size]
+            else:
+                index = self.group_fnc[label]
+                inputs = self.in_emb.weight[index]          # [batch, lstm_size]
 
         inputs = inputs.unsqueeze(0)                        # [1, batch(or 1), lstm_size]
         for i_subpol in range(self.n_subpolicy):

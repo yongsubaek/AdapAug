@@ -160,6 +160,7 @@ if __name__ == '__main__':
     parser.add_argument('--no_img', action='store_true')
     parser.add_argument('--r_type', type=int, default=1)
     parser.add_argument('--validation', action='store_true')
+    parser.add_argument('--n_mismatch',type=int, default=-1)
 
 
     args = parser.parse_args()
@@ -182,6 +183,7 @@ if __name__ == '__main__':
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
     logger.info('initialize ray...')
     ray.init(address=args.redis)
+    # ray.init(address=args.redis, local_mode=True)
     logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
     logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
     w.start(tag='train_no_aug')
@@ -230,8 +232,23 @@ if __name__ == '__main__':
     ops = augment_list(False)
     target_path = base_path + "/target_network.pt"
     ctl_save_path = base_path + "/ctl_network.pt"
+
+    # group function
+    if args.n_mismatch >= 0:
+        group_1 = torch.arange(0,10).cuda()
+        group_2 = torch.arange(10,20).cuda()
+        group_tmp = group_2.clone()
+        group_2[:args.n_mismatch] = group_1[:args.n_mismatch]
+        group_1[:args.n_mismatch] = group_tmp[:args.n_mismatch]
+        group_fnc = torch.zeros(20, dtype=torch.int64).cuda()
+        group_fnc[group_1] = 0
+        group_fnc[group_2] = 1
+    else:
+        group_fnc=None
+
     controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size, lstm_num_layers = args.lstm_n,
-                            operation_prob=0, img_input=not args.no_img, temperature=args.temp).cuda()
+                            operation_prob=0, img_input=not args.no_img, temperature=args.temp, group_fnc=group_fnc).cuda()
+
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,
             'target_path': target_path, 'ctl_save_path': ctl_save_path, 'childnet_paths': paths,

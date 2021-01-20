@@ -20,6 +20,7 @@ from AdapAug.augmentations import *
 from AdapAug.common import get_logger
 from AdapAug.imagenet import ImageNet
 from AdapAug.networks.efficientnet_pytorch.model import EfficientNet
+from AdapAug.group_data import GroupDataset
 from collections import Counter
 op_list = augment_list(False)
 
@@ -38,19 +39,41 @@ _CIFAR_MEAN, _CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
 _CIFAR_STD2 = (0.2470, 0.2435, 0.2616)
 _SVHN_MEAN, _SVHN_STD = (0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)
 
+_DOUB_MEAN, _DOUB_STD = (0.4595, 0.4593, 0.4621), (0.2208, 0.2200, 0.2258)
+
 class AdapAugData(Dataset):
-    def __init__(self, dataname, controller=None, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kwargs):
-        dataset = torchvision.datasets.__dict__[dataname](transform=None, **kwargs)
+    def __init__(self, dataname, controller=None, split='train', download=False, transform=None, given_policy=None, target_transform=None, clean_transform=None, batch_multiplier=1, **kwargs):
+        dataset = []
+        for _name in dataname:
+            if 'CIFAR' in _name:
+                cifar_dataset = torchvision.datasets.__dict__[_name](transform=None, **kwargs)
+                cifar_dataset.n_cls = 10
+                cifar_dataset.labels = np.array(cifar_dataset.targets)
+                dataset.append(cifar_dataset)
+            elif 'SVHN' in _name:
+                svhn_dataset = torchvision.datasets.__dict__[_name](transform=None, **kwargs)
+                svhn_dataset.n_cls = 10
+                svhn_dataset.data = np.transpose(svhn_dataset.data, (0,2,3,1))
+                dataset.append(svhn_dataset)
+        # dataset = torchvision.datasets.__dict__[dataname](transform=None, **kwargs)
+
         self.dataname = dataname
         if dataname == "SVHN":
             kwargs['split'] = 'extra'
-            extraset = torchvision.datasets.__dict__[dataname](transform=None, **kwargs)
-            self.len_list = [len(dataset), len(extraset)]
-            self.data = np.transpose(np.concatenate([dataset.data, extraset.data]), (0,2,3,1))
-            self.targets = self.labels = list(dataset.labels) + list(extraset.labels)
+            extraset = torchvision.datasets.__dict__[dataname[0]](transform=None, **kwargs)
+            extraset.data = np.transpose(extraset.data, (0,2,3,1))
+            self.len_list = [len(dataset[0]), len(extraset)]
+            self.data = np.concatenate([dataset[0].data, extraset.data])
+            self.targets = self.labels = list(dataset[0].labels) + list(extraset.labels)
+        elif len(dataname) > 1:
+            self.len_list = [len(data) for data in dataset]
+            self.data = np.concatenate([data.data for data in dataset], axis=0)
+            n_cls_list = [data.n_cls for data in dataset]
+            accumulated_n_cls_list = [sum(n_cls_list[:i]) for i in range(len(n_cls_list))]
+            self.targets = self.labels = sum([list(data.labels + accumulated_n_cls_list[i]) for i, data in enumerate(dataset)],[])
         else:
-            self.data = dataset.data
-            self.targets = self.labels = dataset.targets
+            self.data = dataset[0].data
+            self.targets = self.labels = dataset[0].targets
         self.transform = transform
 
         # for i,x in enumerate(transform.transforms):
@@ -132,11 +155,15 @@ class AdapAugData(Dataset):
             return (aug_img, img, log_prob, policy), target
         else:
             return img, target
+
+
 def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode=-1, gr_assign=None, gr_ids=None, controller=None, _transform=None, rand_val=False, batch_multiplier=1, validation=False):
     if _transform is None:
         _transform = C.get()['aug']
     if 'cifar' in dataset or 'svhn' in dataset:
-        if "cifar" in dataset:
+        if 'cifar' in dataset and 'svhn' in dataset:
+            _mean, _std = _DOUB_MEAN, _DOUB_STD
+        elif "cifar" in dataset:
             _mean, _std = _CIFAR_MEAN, _CIFAR_STD
         else:
             _mean, _std = _SVHN_MEAN, _SVHN_STD
@@ -228,13 +255,13 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
     train_idx = valid_idx = None
     if dataset == 'cifar10':
         if controller is not None or batch_multiplier > 1:
-            total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset = AdapAugData(["CIFAR10"], root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'reduced_cifar10':
         if controller is not None or batch_multiplier > 1:
-            total_trainset = AdapAugData("CIFAR10", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset = AdapAugData(["CIFAR10"], root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
         else:
             total_trainset = torchvision.datasets.CIFAR10(root=dataroot, train=True, download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=4000, random_state=0)   # 4000 trainset
@@ -244,13 +271,13 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         testset = torchvision.datasets.CIFAR10(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'cifar100':
         if controller is not None or batch_multiplier > 1:
-            total_trainset = AdapAugData("CIFAR100", root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset = AdapAugData(["CIFAR100"], root=dataroot, controller=controller, train=True, download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
         else:
             total_trainset = torchvision.datasets.CIFAR100(root=dataroot, train=True, download=False, transform=transform_train)
         testset = torchvision.datasets.CIFAR100(root=dataroot, train=False, download=False, transform=transform_test)
     elif dataset == 'svhn': #TODO
         if controller is not None or batch_multiplier > 1:
-            total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset = AdapAugData(["SVHN"], root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
             if split > 0.0:
                 sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
                 sss1 = sss.split(list(range(total_trainset.len_list[0])), total_trainset.targets[:total_trainset.len_list[0]])
@@ -267,7 +294,7 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
         testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
     elif dataset == 'reduced_svhn':
         if controller is not None or batch_multiplier > 1:
-            total_trainset = AdapAugData("SVHN", root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset = AdapAugData(["SVHN"], root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
         else:
             total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
         sss = StratifiedShuffleSplit(n_splits=5, train_size=1000, test_size=7325, random_state=0)
@@ -317,6 +344,34 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             testset.samples[idx] = (testset.samples[idx][0], idx120.index(testset.samples[idx][1]))
         testset = Subset(testset, test_idx)
         print('reduced_imagenet train=', len(total_trainset))
+    elif dataset == 'cifar10_svhn':
+        if controller is not None or batch_multiplier > 1:
+            total_trainset = AdapAugData(["CIFAR10","SVHN"], root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            if split > 0.0:
+                sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
+                sss_list = []
+                for length in total_trainset.len_list:
+                    sss_list.append(sss.split(list(range(length)), total_trainset.targets[:length]))
+                # sss2 = sss.split(list(range(total_trainset.len_list[1])), total_trainset.targets[total_trainset.len_list[0]:])
+                train_idx_list = [None for _ in range(len(total_trainset.len_list))]
+                valid_idx_list = [None for _ in range(len(total_trainset.len_list))]
+                for _ in range(split_idx + 1):
+                    for i in range(len(total_trainset.len_list)):
+                        train_idx_list[i], valid_idx_list[i] = next(sss_list[i])
+                    # train_idx2, valid_idx2 = next(sss2)
+                train_idx_list = [list(ele_idx) for ele_idx in train_idx_list]
+                valid_idx_list = [list(ele_idx) for ele_idx in valid_idx_list]
+                train_idx, valid_idx = sum(train_idx_list, []), sum(valid_idx_list, [])
+                # train_idx, valid_idx = list(train_idx1)+list(train_idx2), list(valid_idx1)+list(valid_idx2)
+        else:
+            # total_trainset = torchvision.datasets.SVHN(root=dataroot, split='train', download=False, transform=transform_train)
+            # extraset = torchvision.datasets.SVHN(root=dataroot, split='extra', download=False, transform=transform_train)
+            # total_trainset = ConcatDataset([trainset, extraset])
+            # total_trainset.targets = total_trainset.labels
+            total_trainset = AdapAugData(["CIFAR10","SVHN"], root=dataroot, controller=controller, split='train', download=False, transform=transform_train, clean_transform=transform_test, given_policy=_transform, batch_multiplier=batch_multiplier)
+            total_trainset.targets = total_trainset.labels
+        # testset = torchvision.datasets.SVHN(root=dataroot, split='test', download=False, transform=transform_test)
+        testset = GroupDataset(["CIFAR10","SVHN"], root=dataroot, split='test', download=False, transform=transform_test)
     else:
         raise ValueError('invalid dataset name=%s' % dataset)
 
@@ -328,11 +383,11 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             policies = []
             log_probs = []
             total_trainset.controller.eval()
-            for data, _ in temp_loader:
+            for data, labels in temp_loader:
                 mpolicy = []
                 mlog_prob = []
                 for m in range(batch_multiplier):
-                    log_prob, _, sampled_policies = total_trainset.controller(data.cuda())
+                    log_prob, _, sampled_policies = total_trainset.controller(data.cuda(), None, labels.cuda())
                     mpolicy.append(sampled_policies.detach().cpu())
                     mlog_prob.append(log_prob.detach().cpu())
                 policies.append(torch.stack(mpolicy)) # [M, datalen, ...]
