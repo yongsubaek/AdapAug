@@ -649,7 +649,7 @@ def train_controller3(controller, config):
                 inputs, labels = inputs.cuda(), labels.cuda()
                 policy = a_dict['policy'][step].cuda()
                 top1 = a_dict['acc'][step]
-                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy, labels.repeat(batch_multiplier,1))
+                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy, labels.repeat(batch_multiplier))
                 if reward_type == 0:
                     a_baseline.update(reward.mean())
                     advantages = reward - a_baseline.value()
@@ -688,7 +688,7 @@ def train_controller3(controller, config):
                 inputs, labels = inputs.cuda(), labels.cuda()
                 policy = d_dict['policy'][step].cuda() # [batch*M, n_subpolicy, n_op, 3]
                 top1 = d_dict['acc'][step]
-                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy, labels.repeat(batch_multiplier,1)) # [batch*M]
+                log_probs, entropys, _ = controller(inputs.repeat(batch_multiplier,1,1,1), policy, labels.repeat(batch_multiplier)) # [batch*M]
                 if reward_type == 0:
                     d_baseline.update(reward.mean())
                     advantages = reward - d_baseline.value()

@@ -161,6 +161,7 @@ if __name__ == '__main__':
     parser.add_argument('--r_type', type=int, default=1)
     parser.add_argument('--validation', action='store_true')
     parser.add_argument('--n_mismatch',type=int, default=-1)
+    parser.add_argument('--n_controller',type=int, default=-1)
 
 
     args = parser.parse_args()
@@ -181,53 +182,53 @@ if __name__ == '__main__':
         C.get()['test_dataset'] = C.get()['dataset']
     copied_c = copy.deepcopy(C.get().conf)
     paths = [_get_path(C.get()['dataset'], C.get()['model']['type'], '%s_ratio%.1f_fold%d' % (args.childaug, args.cv_ratio, i)) for i in range(cv_num)]
-    logger.info('initialize ray...')
-    ray.init(address=args.redis)
-    # ray.init(address=args.redis, local_mode=True)
-    logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
-    logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
-    w.start(tag='train_no_aug')
-    print(paths)
-    reqs = [
-        train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
-        for i in range(cv_num)]
+    # logger.info('initialize ray...')
+    # ray.init(address=args.redis)
+    # # ray.init(address=args.redis, local_mode=True)
+    # logger.info('search augmentation policies, dataset=%s model=%s' % (C.get()['dataset'], C.get()['model']['type']))
+    # logger.info('----- Train without Augmentations cv=%d ratio(test)=%.1f -----' % (cv_num, args.cv_ratio))
+    # w.start(tag='train_no_aug')
+    # print(paths)
+    # reqs = [
+    #     train_model.remote(copy.deepcopy(copied_c), None, args.dataroot, args.childaug, args.cv_ratio, i, save_path=paths[i], evaluation_interval=50)
+    #     for i in range(cv_num)]
 
-    tqdm_epoch = tqdm(range(C.get()['epoch']))
-    is_done = False
-    for epoch in tqdm_epoch:
-        while True:
-            epochs_per_cv = OrderedDict()
-            for cv_idx in range(cv_num):
-                try:
-                    latest_ckpt = torch.load(paths[cv_idx])
-                    if 'epoch' not in latest_ckpt:
-                        epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
-                        continue
-                    epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
-                except Exception as e:
-                    continue
-            tqdm_epoch.set_postfix(epochs_per_cv)
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
-                is_done = True
-            if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
-                break
-            time.sleep(10)
-        if is_done:
-            break
-    logger.info('getting results...')
-    pretrain_results = ray.get(reqs)
-    aff_bases = []
-    for r_model, r_cv, r_dict in pretrain_results:
-        logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
-        # for Affinity calculation
-        aff_bases.append(r_dict['top1_valid'])
-        del r_model, r_cv, r_dict
-    logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
-    if args.until == 1:
-        sys.exit(0)
-    del latest_ckpt, pretrain_results, reqs
-    ray.shutdown()
-    logger.info('----- Search Test-Time Augmentation Policies -----')
+    # tqdm_epoch = tqdm(range(C.get()['epoch']))
+    # is_done = False
+    # for epoch in tqdm_epoch:
+    #     while True:
+    #         epochs_per_cv = OrderedDict()
+    #         for cv_idx in range(cv_num):
+    #             try:
+    #                 latest_ckpt = torch.load(paths[cv_idx])
+    #                 if 'epoch' not in latest_ckpt:
+    #                     epochs_per_cv['cv%d' % (cv_idx + 1)] = C.get()['epoch']
+    #                     continue
+    #                 epochs_per_cv['cv%d' % (cv_idx+1)] = latest_ckpt['epoch']
+    #             except Exception as e:
+    #                 continue
+    #         tqdm_epoch.set_postfix(epochs_per_cv)
+    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= C.get()['epoch']:
+    #             is_done = True
+    #         if len(epochs_per_cv) == cv_num and min(epochs_per_cv.values()) >= epoch:
+    #             break
+    #         time.sleep(10)
+    #     if is_done:
+    #         break
+    # logger.info('getting results...')
+    # pretrain_results = ray.get(reqs)
+    # aff_bases = []
+    # for r_model, r_cv, r_dict in pretrain_results:
+    #     logger.info('model=%s cv=%d top1_train=%.4f top1_valid=%.4f' % (r_model, r_cv+1, r_dict['top1_train'], r_dict['top1_valid']))
+    #     # for Affinity calculation
+    #     aff_bases.append(r_dict['top1_valid'])
+    #     del r_model, r_cv, r_dict
+    # logger.info('processed in %.4f secs' % w.pause('train_no_aug'))
+    # if args.until == 1:
+    #     sys.exit(0)
+    # del latest_ckpt, pretrain_results, reqs
+    # ray.shutdown()
+    # logger.info('----- Search Test-Time Augmentation Policies -----')
     w.start(tag='search-g_train')
     ops = augment_list(False)
     target_path = base_path + "/target_network.pt"
@@ -247,7 +248,7 @@ if __name__ == '__main__':
         group_fnc=None
 
     controller = Controller(n_subpolicy=args.num_policy, lstm_size=args.lstm_size, emb_size=args.emb_size, lstm_num_layers = args.lstm_n,
-                            operation_prob=0, img_input=not args.no_img, temperature=args.temp, group_fnc=group_fnc).cuda()
+                            operation_prob=0, img_input=not args.no_img, temperature=args.temp, group_fnc=group_fnc, n_controller=args.n_controller).cuda()
 
     ctl_config = {
             'dataroot': args.dataroot, 'split_ratio': args.cv_ratio, 'load_search': args.load_search,

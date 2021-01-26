@@ -21,6 +21,7 @@ class Controller(nn.Module):
                  temperature=None,
                  img_input=True,
                  group_fnc=None,
+                 n_controller=1,
                  ):
         super(Controller, self).__init__()
 
@@ -39,12 +40,21 @@ class Controller(nn.Module):
 
         self.img_input = img_input
         self.group_fnc = group_fnc
+        self.n_controller = n_controller
         self._create_params()
 
     def _create_params(self):
-        self.lstm = nn.LSTM(input_size=self.emb_size,
-                              hidden_size=self.lstm_size,
-                              num_layers=self.lstm_num_layers)
+        self.lstm = nn.ModuleList([
+            nn.LSTM(input_size=self.emb_size,
+                    hidden_size=self.lstm_size,
+                    num_layers=self.lstm_num_layers)
+            for _ in range(self.n_controller)
+        ])
+
+        # self.lstm = nn.LSTM(input_size=self.emb_size,
+        #                     hidden_size=self.lstm_size,
+        #                     num_layers=self.lstm_num_layers)
+        
         if self.img_input:
             # input CNN
             # self.conv_input = nn.Sequential(
@@ -70,13 +80,40 @@ class Controller(nn.Module):
                 self.in_emb = nn.Embedding(2, self.emb_size)  # Learn the starting input
 
         # LSTM output to Categorical logits
-        self.o_logit = nn.Linear(self.lstm_size, self._operation_types)#, bias=False)
-        self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
-        self.m_logit = nn.Linear(self.lstm_size, self._operation_mag  )#, bias=False)
+        self.o_logit = nn.ModuleList([
+            nn.Linear(self.lstm_size, self._operation_types)#, bias=False)
+            for _ in range(self.n_controller)
+        ])
+        self.p_logit = nn.ModuleList([
+            nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
+            for _ in range(self.n_controller)
+        ])
+        self.m_logit = nn.ModuleList([
+            nn.Linear(self.lstm_size, self._operation_mag  )#, bias=False)
+            for _ in range(self.n_controller)
+        ])
         # Embedded input to LSTM: (class:int)->(lstm input vector)
-        self.o_emb = nn.Embedding(self._operation_types, self.emb_size)
-        self.p_emb = nn.Embedding(self._operation_prob , self.emb_size)
-        self.m_emb = nn.Embedding(self._operation_mag  , self.emb_size)
+        self.o_emb = nn.ModuleList([
+            nn.Embedding(self._operation_types, self.emb_size)
+            for _ in range(self.n_controller)
+        ])
+        self.p_emb = nn.ModuleList([
+            nn.Embedding(self._operation_prob , self.emb_size)
+            for _ in range(self.n_controller)
+        ])
+        self.m_emb = nn.ModuleList([
+            nn.Embedding(self._operation_mag  , self.emb_size)
+            for _ in range(self.n_controller)
+        ])
+        
+        # # LSTM output to Categorical logits
+        # self.o_logit = nn.Linear(self.lstm_size, self._operation_types)#, bias=False)
+        # self.p_logit = nn.Linear(self.lstm_size, self._operation_prob )#, bias=False)
+        # self.m_logit = nn.Linear(self.lstm_size, self._operation_mag  )#, bias=False)
+        # # Embedded input to LSTM: (class:int)->(lstm input vector)
+        # self.o_emb = nn.Embedding(self._operation_types, self.emb_size)
+        # self.p_emb = nn.Embedding(self._operation_prob , self.emb_size)
+        # self.m_emb = nn.Embedding(self._operation_mag  , self.emb_size)
 
         self.softmax = nn.Softmax(dim=1)
 
@@ -86,8 +123,9 @@ class Controller(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Linear) or isinstance(m, nn.Embedding):
                 nn.init.uniform_(m.weight, -0.1, 0.1)
-        nn.init.uniform_(self.lstm.weight_hh_l0, -0.1, 0.1)
-        nn.init.uniform_(self.lstm.weight_ih_l0, -0.1, 0.1)
+        for i_ctr in range(self.n_controller):
+            nn.init.uniform_(self.lstm[i_ctr].weight_hh_l0, -0.1, 0.1)
+            nn.init.uniform_(self.lstm[i_ctr].weight_ih_l0, -0.1, 0.1)
 
     def rnn_params(self):
         # return nn.ParameterList([ param for param in self.parameters() if param not in self.conv_input.parameters()])
@@ -117,81 +155,118 @@ class Controller(nn.Module):
         log_probs: batch of log_prob, (tensor)[batch or 1]
         entropys: batch of entropy, (tensor)[batch or 1]
         subpolicies: batch of sampled policies, (np.array)[batch, n_subpolicy, n_op, 3]
-        """
-        log_probs = []
-        entropys = []
-        subpolicies = []
-        self.hidden = None  # setting state to None will initialize LSTM state with 0s
+        """      
+        batch_size = image.shape[0]
+        
         if self.img_input:
             inputs = self.conv_input(image)                 # [batch, lstm_size]
+            index_list = [list(range(inputs.shape[0]))]
         else:
             if self.group_fnc is None:
                 inputs = self.in_emb.weight                  # [1, lstm_size]
+                index_list = [list(range(inputs.shape[0]))]
             else:
-                index = self.group_fnc[label]
-                inputs = self.in_emb.weight[index]          # [batch, lstm_size]
+                groups = self.group_fnc[label]
+                inputs = self.in_emb.weight[groups]          # [batch, lstm_size]
+                index_list = [list(range(inputs.shape[0]))]
 
-        inputs = inputs.unsqueeze(0)                        # [1, batch(or 1), lstm_size]
-        for i_subpol in range(self.n_subpolicy):
-            subpolicy = []
-            for i_op in range(self.n_op):
-                # sample operation type, o
-                output, self.hidden = self.lstm(inputs, self.hidden)        # [1, batch, lstm_size]
-                output = output.squeeze(0)                      # [batch, lstm_size]
-                logit = self.o_logit(output)                    # [batch, _operation_types]
-                logit = self.softmax_tanh(logit)
-                o_id_dist = Categorical(logits=logit)
-                if policy is not None:
-                    o_id = policy[:,i_subpol,i_op,0]
-                else:
-                    o_id = o_id_dist.sample()                   # [batch]
-                log_prob = o_id_dist.log_prob(o_id)             # [batch]
-                entropy = o_id_dist.entropy()                   # [batch]
-                log_probs.append(log_prob)
-                entropys.append(entropy)
-                inputs = self.o_emb(o_id)                       # [batch, lstm_size]
-                inputs = inputs.unsqueeze(0)                    # [1, batch, lstm_size]
-                if self._operation_prob > 0:
-                    # sample operation probability, p
-                    output, self.hidden = self.lstm(inputs, self.hidden)
-                    output = output.squeeze(0)
-                    logit = self.p_logit(output)
+                if self.n_controller > 1:
+                    index_list = []
+                    index_list.append([i for i, grp in enumerate(groups) if grp == 0])
+                    index_list.append([i for i, grp in enumerate(groups) if grp == 1])                    
+        inputs_list = [inputs[index].unsqueeze(0) for index in index_list] # [n_controller, 1, batch_chunk(or 1), lstm_size]
+        controller_subpolicy = []
+        log_probs_list = []
+        entropys_list = []
+        for i_ctr in range(self.n_controller):
+            if len(index_list[i_ctr]) == 0:
+                controller_subpolicy.append(torch.tensor([]).cuda())
+                log_probs_list.append(torch.tensor([]).cuda())
+                entropys_list.append(torch.tensor([]).cuda())
+                continue
+            self.hidden = None  # setting state to None will initialize LSTM state with 0s
+            subpolicies = []
+            log_probs = []
+            entropys = []
+            for i_subpol in range(self.n_subpolicy):
+                subpolicy = []
+                for i_op in range(self.n_op):
+                    # sample operation type, o
+                    output, self.hidden = self.lstm[i_ctr](inputs_list[i_ctr], self.hidden)        # [1, batch, lstm_size]
+                    output = output.squeeze(0)                      # [batch, lstm_size]
+                    logit = self.o_logit[i_ctr](output)                    # [batch, _operation_types]
                     logit = self.softmax_tanh(logit)
-                    p_id_dist = Categorical(logits=logit)
+                    o_id_dist = Categorical(logits=logit)
                     if policy is not None:
-                        p_id = policy[:,i_subpol,i_op,1]
+                        i_policy = policy[index_list[i_ctr]]
+                        o_id = i_policy[:,i_subpol,i_op,0]
                     else:
-                        p_id = p_id_dist.sample()
-                    log_prob = p_id_dist.log_prob(p_id)
-                    entropy = p_id_dist.entropy()
+                        o_id = o_id_dist.sample()                   # [batch]
+                    log_prob = o_id_dist.log_prob(o_id)             # [batch]
+                    entropy = o_id_dist.entropy()                   # [batch]
                     log_probs.append(log_prob)
                     entropys.append(entropy)
-                    inputs = self.p_emb(p_id)
-                    inputs = inputs.unsqueeze(0)
-                else:
-                    p_id = 10 * torch.ones_like(o_id).cuda()
-                # sample operation magnitude, m
-                output, self.hidden = self.lstm(inputs, self.hidden)
-                output = output.squeeze(0)
-                logit = self.m_logit(output)
-                logit = self.softmax_tanh(logit)
-                m_id_dist = Categorical(logits=logit)
-                if policy is not None:
-                    m_id = policy[:,i_subpol,i_op,2]
-                else:
-                    m_id = m_id_dist.sample()
-                log_prob = m_id_dist.log_prob(m_id)
-                entropy = m_id_dist.entropy()
-                log_probs.append(log_prob)
-                entropys.append(entropy)
-                inputs = self.m_emb(m_id)
-                inputs = inputs.unsqueeze(0)
-                subpolicy.append([o_id.detach().cpu().numpy(), p_id.detach().cpu().numpy(), m_id.detach().cpu().numpy()])
-            subpolicies.append(subpolicy)
-        sampled_policies = np.array(subpolicies)                    # (np.array) [n_subpolicy, n_op, 3, batch]
-        sampled_policies = torch.from_numpy(np.moveaxis(sampled_policies,-1,0)).cuda()  # [batch, n_subpolicy, n_op, 3]
-        log_probs = sum(log_probs)                             # (tensor) [batch]
-        entropys = sum(entropys)                               # (tensor) [batch]
+                    inputs_list[i_ctr] = self.o_emb[i_ctr](o_id)                       # [batch, lstm_size]
+                    inputs_list[i_ctr] = inputs_list[i_ctr].unsqueeze(0)                    # [1, batch, lstm_size]
+                    if self._operation_prob > 0:
+                        # sample operation probability, p
+                        output, self.hidden = self.lstm[i_ctr](inputs_list[i_ctr], self.hidden)
+                        output = output.squeeze(0)
+                        logit = self.p_logit[i_ctr](output)
+                        logit = self.softmax_tanh(logit)
+                        p_id_dist = Categorical(logits=logit)
+                        if policy is not None:
+                            i_policy = policy[index_list[i_ctr]]
+                            p_id = i_policy[:,i_subpol,i_op,1]
+                        else:
+                            p_id = p_id_dist.sample()
+                        log_prob = p_id_dist.log_prob(p_id)
+                        entropy = p_id_dist.entropy()
+                        log_probs.append(log_prob)
+                        entropys.append(entropy)
+                        inputs_list[i_ctr] = self.p_emb[i_ctr](p_id)
+                        inputs_list[i_ctr] = inputs_list[i_ctr].unsqueeze(0)
+                    else:
+                        p_id = 10 * torch.ones_like(o_id).cuda()
+                    # sample operation magnitude, m
+                    output, self.hidden = self.lstm[i_ctr](inputs_list[i_ctr], self.hidden)
+                    output = output.squeeze(0)
+                    logit = self.m_logit[i_ctr](output)
+                    logit = self.softmax_tanh(logit)
+                    m_id_dist = Categorical(logits=logit)
+                    if policy is not None:
+                        i_policy = policy[index_list[i_ctr]]
+                        m_id = i_policy[:,i_subpol,i_op,2]
+                    else:
+                        m_id = m_id_dist.sample()
+                    log_prob = m_id_dist.log_prob(m_id)
+                    entropy = m_id_dist.entropy()
+                    log_probs.append(log_prob)
+                    entropys.append(entropy)
+                    inputs_list[i_ctr] = self.m_emb[i_ctr](m_id)
+                    inputs_list[i_ctr] = inputs_list[i_ctr].unsqueeze(0)
+                    subpolicy.append([o_id.detach().cpu().numpy(), p_id.detach().cpu().numpy(), m_id.detach().cpu().numpy()])
+                subpolicies.append(subpolicy)
+            subpolicies = np.array(subpolicies)                   # (np.array) [n_subpolicy, n_op, 3, batch_chunk]
+            subpolicies = torch.from_numpy(np.moveaxis(subpolicies,-1,0)).cuda()  # [batch_chunk, n_subpolicy, n_op, 3]
+
+            controller_subpolicy.append(subpolicies)
+            log_probs_list.append(sum(log_probs)) # (tensor) [batch_chunk]
+            entropys_list.append(sum(entropys)) # (tensor) [batch_chunk]
+
+        sampled_policies = controller_subpolicy                   # (list) [n_controller, batch_chunk (different), n_subpolicy, n_op, 3]
+        zeros_polices = torch.zeros([batch_size, self.n_subpolicy, self.n_op, 3], dtype=torch.int64).cuda() # [batch, n_subpolicy, n_op, 3]
+        zeros_log_probs = torch.zeros([batch_size], dtype=torch.float32).cuda()
+        zeros_entropys = torch.zeros([batch_size], dtype=torch.float32).cuda()
+        for i_ctr in range(self.n_controller):
+            if len(sampled_policies[i_ctr]) > 0:
+                zeros_polices[index_list[i_ctr]] = sampled_policies[i_ctr]
+                zeros_log_probs[index_list[i_ctr]] = log_probs_list[i_ctr]
+                zeros_entropys[index_list[i_ctr]] = entropys_list[i_ctr]
+
+        sampled_policies = zeros_polices
+        log_probs = zeros_log_probs                            # (tensor) [batch]
+        entropys = zeros_entropys                              # (tensor) [batch]
         return log_probs, entropys, sampled_policies
 
 class RandAug(object):

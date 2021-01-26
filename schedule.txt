@@ -1,0 +1,8 @@
+./run.sh --gpu 0 --cv_id 0 --n_mismatch 0
+./run.sh --gpu 1 --cv_id 1 --n_mismatch 0
+./run.sh --gpu 2 --cv_id 2 --n_mismatch 0
+./run.sh --gpu 3 --cv_id 3 --n_mismatch 0
+./run.sh --gpu 4 --cv_id 0 --n_mismatch 5
+./run.sh --gpu 5 --cv_id 1 --n_mismatch 5
+./run.sh --gpu 6 --cv_id 2 --n_mismatch 5
+./run.sh --gpu 7 --cv_id 3 --n_mismatch 5
